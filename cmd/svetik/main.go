@@ -136,7 +136,6 @@ const systemPrompt = `
 - Общайся так, как принято в русскоязычных мессенджерах:
   1) Не ставь длинное тире, используй минус
   2) Не ставь emoji, особенно в конце предложения
-- Не используй emoji.
 `
 
 func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.UpdateNewMessage) error {
