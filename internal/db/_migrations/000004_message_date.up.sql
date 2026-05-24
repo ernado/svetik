@@ -1,0 +1,3 @@
+ALTER TABLE chat_messages
+    ADD COLUMN date TIMESTAMPTZ NOT NULL DEFAULT NOW();
+

@@ -1,5 +1,7 @@
 package svetik
 
+import "time"
+
 // Chat represents a Telegram chat.
 type Chat struct {
 	ID   int64
@@ -34,12 +36,13 @@ type Context struct {
 
 // Message represents a Telegram chat message.
 type Message struct {
-	ChatID        int64   `json:"chat_id"`
-	MessageID     int64   `json:"message_id"`
-	UserID        int64   `json:"user_id"`
-	Text          string  `json:"text"`
-	IsMyself      bool    `json:"is_myself"`
-	ReplyToID     *int64  `json:"reply_to_id"`
-	ReplyToText   *string `json:"reply_to_text"`
-	ReplyToMyself *bool   `json:"reply_to_myself"`
+	ChatID        int64     `json:"chat_id"`
+	MessageID     int64     `json:"message_id"`
+	UserID        int64     `json:"user_id"`
+	Date          time.Time `json:"date"`
+	Text          string    `json:"text"`
+	IsMyself      bool      `json:"is_myself"`
+	ReplyToID     *int64    `json:"reply_to_id"`
+	ReplyToText   *string   `json:"reply_to_text"`
+	ReplyToMyself *bool     `json:"reply_to_myself"`
 }
