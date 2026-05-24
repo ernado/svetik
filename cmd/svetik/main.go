@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ernado/svetik"
 	"github.com/go-faster/errors"
@@ -139,6 +140,8 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 		sender = message.NewSender(a.api)
 		reply  = sender.Reply(e, u)
 		lg     = zctx.From(ctx).With(zap.Int("msg.id", m.ID))
+		answer = sender.Answer(e, u)
+		action = answer.TypingAction()
 	)
 
 	userID, ok := extractUserID(m)
@@ -343,10 +346,28 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 			dialog = append(dialog, openrouter.UserMessage(string(data)))
 		}
 
+		done := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
+					if err := action.Typing(ctx); err != nil {
+						lg.Error("Failed to send typing action", zap.Error(err))
+						return
+					}
+				}
+			}
+		}()
 		resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
 			Model:    "deepseek/deepseek-v4-flash",
 			Messages: dialog,
 		})
+		close(done)
+
 		if err != nil {
 			return errors.Wrap(err, "generate content")
 		}
