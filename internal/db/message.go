@@ -14,6 +14,7 @@ func (db *DB) SaveMessage(ctx context.Context, msg svetik.Message) error {
 		Columns(
 			"chat_id",
 			"message_id",
+			"user_id",
 			"text",
 			"is_myself",
 			"reply_to_id",
@@ -23,6 +24,7 @@ func (db *DB) SaveMessage(ctx context.Context, msg svetik.Message) error {
 		Values(
 			msg.ChatID,
 			msg.MessageID,
+			msg.UserID,
 			msg.Text,
 			msg.IsMyself,
 			msg.ReplyToID,
@@ -48,6 +50,7 @@ func (db *DB) GetLastMessages(ctx context.Context, chatID int64, n uint64) ([]sv
 	q := psql.Select(
 		"chat_id",
 		"message_id",
+		"user_id",
 		"text",
 		"is_myself",
 		"reply_to_id",
@@ -78,6 +81,7 @@ func (db *DB) GetLastMessages(ctx context.Context, chatID int64, n uint64) ([]sv
 		if err := rows.Scan(
 			&msg.ChatID,
 			&msg.MessageID,
+			&msg.UserID,
 			&msg.Text,
 			&msg.IsMyself,
 			&msg.ReplyToID,
@@ -107,6 +111,7 @@ func (db *DB) GetMessage(ctx context.Context, chatID, messageID int64) (*svetik.
 	q := psql.Select(
 		"chat_id",
 		"message_id",
+		"user_id",
 		"text",
 		"is_myself",
 		"reply_to_id",
@@ -126,6 +131,7 @@ func (db *DB) GetMessage(ctx context.Context, chatID, messageID int64) (*svetik.
 	err = db.pgx.QueryRow(ctx, sql, args...).Scan(
 		&msg.ChatID,
 		&msg.MessageID,
+		&msg.UserID,
 		&msg.Text,
 		&msg.IsMyself,
 		&msg.ReplyToID,

@@ -1,0 +1,3 @@
+ALTER TABLE chat_messages
+    ADD COLUMN user_id BIGINT NOT NULL DEFAULT 0;
+

@@ -36,6 +36,7 @@ type Context struct {
 type Message struct {
 	ChatID        int64   `json:"chat_id"`
 	MessageID     int64   `json:"message_id"`
+	UserID        int64   `json:"user_id"`
 	Text          string  `json:"text"`
 	IsMyself      bool    `json:"is_myself"`
 	ReplyToID     *int64  `json:"reply_to_id"`

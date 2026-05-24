@@ -324,6 +324,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 	if err := a.db.SaveMessage(ctx, svetik.Message{
 		ChatID:        cc.chatID,
 		MessageID:     int64(m.ID),
+		UserID:        user.ID,
 		Text:          m.Message,
 		IsMyself:      m.Out,
 		ReplyToID:     replyToID,
@@ -379,7 +380,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		}
 
 		for _, msg := range lastMessages {
-			member, err := a.db.GetChatMember(ctx, cc.chatID, user.ID)
+			member, err := a.db.GetChatMember(ctx, msg.ChatID, msg.UserID)
 			if err != nil {
 				return errors.Wrap(err, "get member")
 			}
@@ -440,6 +441,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			if err := a.db.SaveMessage(ctx, svetik.Message{
 				ChatID:    cc.chatID,
 				MessageID: int64(v.ID),
+				UserID:    a.self.ID,
 				Text:      replyText,
 				ReplyToID: svetik.T(int64(m.ID)),
 				IsMyself:  true,
@@ -453,6 +455,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 					if err := a.db.SaveMessage(ctx, svetik.Message{
 						ChatID:    cc.chatID,
 						MessageID: int64(upd.ID),
+						UserID:    a.self.ID,
 						Text:      replyText,
 						ReplyToID: svetik.T(int64(m.ID)),
 						IsMyself:  true,

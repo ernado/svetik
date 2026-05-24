@@ -13,6 +13,7 @@
 |-----------------|---------|-----------------------------------------------|
 | chat_id         | BIGINT  | NOT NULL, PK, FK → chat(id) ON DELETE CASCADE |
 | message_id      | BIGINT  | NOT NULL, PK                                  |
+| user_id         | BIGINT  | NOT NULL                                      |
 | text            | TEXT    | NOT NULL                                      |
 | is_myself       | BOOLEAN | NOT NULL                                      |
 | reply_to_id     | BIGINT  |                                               |
