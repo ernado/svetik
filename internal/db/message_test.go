@@ -89,6 +89,82 @@ func (suite *MessageTestSuite) TestSaveMessage_WithReply() {
 	suite.Equal(msg, *got)
 }
 
+func (suite *MessageTestSuite) TestGetLastMessages_Empty() {
+	ctx := suite.T().Context()
+
+	chat := suite.chat()
+
+	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 10)
+	suite.Require().NoError(err)
+	suite.Empty(msgs)
+}
+
+func (suite *MessageTestSuite) TestGetLastMessages_LessThanN() {
+	ctx := suite.T().Context()
+
+	chat := suite.chat()
+
+	for i := int64(1); i <= 3; i++ {
+		err := suite.db.SaveMessage(ctx, svetik.Message{
+			ChatID:    chat.ID,
+			MessageID: i,
+			Text:      "msg",
+		})
+		suite.Require().NoError(err)
+	}
+
+	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 10)
+	suite.Require().NoError(err)
+	suite.Require().Len(msgs, 3)
+	suite.Equal(int64(1), msgs[0].MessageID)
+	suite.Equal(int64(2), msgs[1].MessageID)
+	suite.Equal(int64(3), msgs[2].MessageID)
+}
+
+func (suite *MessageTestSuite) TestGetLastMessages_ReturnsLastN() {
+	ctx := suite.T().Context()
+
+	chat := suite.chat()
+
+	for i := int64(1); i <= 5; i++ {
+		err := suite.db.SaveMessage(ctx, svetik.Message{
+			ChatID:    chat.ID,
+			MessageID: i,
+			Text:      "msg",
+		})
+		suite.Require().NoError(err)
+	}
+
+	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 3)
+	suite.Require().NoError(err)
+	suite.Require().Len(msgs, 3)
+	suite.Equal(int64(3), msgs[0].MessageID)
+	suite.Equal(int64(4), msgs[1].MessageID)
+	suite.Equal(int64(5), msgs[2].MessageID)
+}
+
+func (suite *MessageTestSuite) TestGetLastMessages_AscendingOrder() {
+	ctx := suite.T().Context()
+
+	chat := suite.chat()
+
+	for _, id := range []int64{10, 20, 30} {
+		err := suite.db.SaveMessage(ctx, svetik.Message{
+			ChatID:    chat.ID,
+			MessageID: id,
+			Text:      "msg",
+		})
+		suite.Require().NoError(err)
+	}
+
+	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 3)
+	suite.Require().NoError(err)
+	suite.Require().Len(msgs, 3)
+	suite.Equal(int64(10), msgs[0].MessageID)
+	suite.Equal(int64(20), msgs[1].MessageID)
+	suite.Equal(int64(30), msgs[2].MessageID)
+}
+
 func TestMessageTestSuite(t *testing.T) {
 	t.Parallel()
 

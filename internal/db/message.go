@@ -43,6 +43,65 @@ func (db *DB) SaveMessage(ctx context.Context, msg svetik.Message) error {
 	return nil
 }
 
+// GetLastMessages returns the last n messages for a given chat ID, ordered by message_id ascending.
+func (db *DB) GetLastMessages(ctx context.Context, chatID int64, n uint64) ([]svetik.Message, error) {
+	q := psql.Select(
+		"chat_id",
+		"message_id",
+		"text",
+		"is_myself",
+		"reply_to_id",
+		"reply_to_text",
+		"reply_to_myself",
+	).
+		From("chat_messages").
+		Where("chat_id = ?", chatID).
+		OrderBy("message_id DESC").
+		Limit(n)
+
+	sql, args, err := q.ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "build query")
+	}
+
+	rows, err := db.pgx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, errors.Wrap(err, "query")
+	}
+	defer rows.Close()
+
+	var msgs []svetik.Message
+
+	for rows.Next() {
+		var msg svetik.Message
+
+		if err := rows.Scan(
+			&msg.ChatID,
+			&msg.MessageID,
+			&msg.Text,
+			&msg.IsMyself,
+			&msg.ReplyToID,
+			&msg.ReplyToText,
+			&msg.ReplyToMyself,
+		); err != nil {
+			return nil, errors.Wrap(err, "scan")
+		}
+
+		msgs = append(msgs, msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrap(err, "rows")
+	}
+
+	// Reverse to return messages in ascending order.
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+
+	return msgs, nil
+}
+
 // GetMessage returns a message by chat ID and message ID.
 func (db *DB) GetMessage(ctx context.Context, chatID, messageID int64) (*svetik.Message, error) {
 	q := psql.Select(

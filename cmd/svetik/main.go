@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -33,10 +34,10 @@ type Application struct {
 	client *telegram.Client
 	ai     *openrouter.Client
 	db     svetik.DB
+	self   *tg.User
 
-	waiter   *floodwait.Waiter
-	trace    trace.Tracer
-	nickname string
+	waiter *floodwait.Waiter
+	trace  trace.Tracer
 }
 
 func (a *Application) Run(ctx context.Context) error {
@@ -57,7 +58,7 @@ func (a *Application) Run(ctx context.Context) error {
 					zap.String("first_name", self.FirstName),
 				)
 
-				a.nickname = self.Username
+				a.self = self
 			}
 			if _, err := a.api.BotsSetBotCommands(ctx, &tg.BotsSetBotCommandsRequest{
 				Scope:    &tg.BotCommandScopeDefault{},
@@ -175,54 +176,109 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 		break
 	}
 
-	if chatFull != nil {
-		lg.Info("Full chat info",
-			zap.Int64("chat_id", chatFull.ID),
-			zap.String("about", chatFull.About),
-		)
-		if err := a.db.UpsertChat(ctx, svetik.Chat{
-			ID:   chatFull.ID,
-			Info: chatFull.About,
-		}); err != nil {
-			lg.Warn("Failed to upsert chat", zap.Int64("chat_id", chatFull.ID), zap.Error(err))
+	if chatFull == nil {
+		lg.Warn("Failed to find full chat")
+		return nil
+	}
+
+	var (
+		userIsAdmin   bool
+		userIsCreator bool
+		userRank      string
+		selfRank      string
+	)
+
+	if v, ok := chatFull.Participants.(*tg.ChatParticipants); ok {
+		for _, participant := range v.Participants {
+			var (
+				id        int64
+				isAdmin   bool
+				isCreator bool
+				rank      string
+			)
+			switch p := participant.(type) {
+			case *tg.ChatParticipantAdmin:
+				id = p.UserID
+				isAdmin = true
+				rank = p.Rank
+			case *tg.ChatParticipantCreator:
+				id = p.UserID
+				isCreator = true
+				rank = p.Rank
+			case *tg.ChatParticipant:
+				id = p.UserID
+				isCreator = false
+				rank = p.Rank
+			}
+			if id == a.self.ID {
+				selfRank = rank
+			}
+			if id == user.ID {
+				userIsAdmin = isAdmin
+				userIsCreator = isCreator
+				userRank = rank
+			}
+		}
+	}
+
+	lg.Info("Full chat info",
+		zap.Int64("chat_id", chatFull.ID),
+		zap.String("about", chatFull.About),
+	)
+	if err := a.db.UpsertChat(ctx, svetik.Chat{
+		ID:   chatFull.ID,
+		Info: chatFull.About,
+	}); err != nil {
+		return errors.Wrap(err, "failed to upsert chat")
+	}
+	if err := a.db.UpsertChatMember(ctx, svetik.ChatMember{
+		ChatID:    chatFull.ID,
+		UserID:    user.ID,
+		Username:  user.Username,
+		FirstName: user.FirstName,
+		LastName:  user.LastName,
+		IsAdmin:   userIsAdmin,
+		IsCreator: userIsCreator,
+		Rank:      userRank,
+	}); err != nil {
+		return errors.Wrap(err, "failed to upsert chat member")
+	}
+
+	var (
+		replyToID     *int64
+		replyToText   *string
+		replyToMyself *bool
+	)
+
+	if replyHeader, ok := m.ReplyTo.(*tg.MessageReplyHeader); ok {
+		id := int64(replyHeader.ReplyToMsgID)
+
+		replyToID = &id
+
+		if replyHeader.QuoteText != "" {
+			replyToText = &replyHeader.QuoteText
 		}
 
-		var (
-			replyToID     *int64
-			replyToText   *string
-			replyToMyself *bool
-		)
-
-		if replyHeader, ok := m.ReplyTo.(*tg.MessageReplyHeader); ok {
-			id := int64(replyHeader.ReplyToMsgID)
-
-			replyToID = &id
-
-			if replyHeader.QuoteText != "" {
-				replyToText = &replyHeader.QuoteText
-			}
-
-			msg, err := a.db.GetMessage(ctx, chatFull.ID, int64(replyHeader.ReplyToMsgID))
-			if err != nil {
-				return errors.Wrap(err, "get message")
-			}
-
-			if msg.IsMyself {
-				replyToMyself = &msg.IsMyself
-			}
+		msg, err := a.db.GetMessage(ctx, chatFull.ID, int64(replyHeader.ReplyToMsgID))
+		if err != nil {
+			return errors.Wrap(err, "get message")
 		}
 
-		if err := a.db.SaveMessage(ctx, svetik.Message{
-			ChatID:        chatFull.ID,
-			MessageID:     int64(m.ID),
-			Text:          m.Message,
-			IsMyself:      m.Out,
-			ReplyToID:     replyToID,
-			ReplyToText:   replyToText,
-			ReplyToMyself: replyToMyself,
-		}); err != nil {
-			lg.Error("save message", zap.Error(err))
+		if msg.IsMyself {
+			replyToMyself = &msg.IsMyself
 		}
+	}
+
+	if err := a.db.SaveMessage(ctx, svetik.Message{
+		ChatID:        chatFull.ID,
+		MessageID:     int64(m.ID),
+		Text:          m.Message,
+		IsMyself:      m.Out,
+		ReplyToID:     replyToID,
+		ReplyToText:   replyToText,
+		ReplyToMyself: replyToMyself,
+	}); err != nil {
+		lg.Error("save message", zap.Error(err))
 	}
 
 	if m.Out {
@@ -230,28 +286,78 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 	}
 
 	switch m.Message {
-	case "/start", "/start@" + a.nickname:
-		if _, err := reply.Text(ctx, "Hello, "+user.FirstName+"!"); err != nil {
+	case "/start", "/start@" + a.self.Username:
+		if _, err := reply.Text(ctx, "Привет, "+user.FirstName+"!"); err != nil {
 			return errors.Wrap(err, "send message")
 		}
 	default:
+		var shouldResponse bool
+
+		if replyToMyself != nil && *replyToMyself {
+			shouldResponse = true
+		}
+
+		for _, name := range []string{
+			"светик",
+			"света",
+		} {
+			if strings.HasPrefix(strings.ToLower(m.Message), name) {
+				shouldResponse = true
+			}
+		}
+
+		if !shouldResponse {
+			lg.Info("Ignoring message")
+			return nil
+		}
+
+		dialog := []openrouter.ChatCompletionMessage{
+			openrouter.SystemMessage(strings.Join([]string{
+				prompt.Protocol, prompt.Character,
+			}, "\n")),
+		}
+
+		lastMessages, err := a.db.GetLastMessages(ctx, chatFull.ID, 150)
+		if err != nil {
+			return errors.Wrap(err, "get last messages")
+		}
+
+		for _, msg := range lastMessages {
+			member, err := a.db.GetChatMember(ctx, chatFull.ID, user.ID)
+			if err != nil {
+				return errors.Wrap(err, "get member")
+			}
+			dialogContext := svetik.Context{
+				Message: &msg,
+				User:    member,
+				Self: &svetik.Self{
+					Name:     a.self.FirstName,
+					Nickname: a.self.Username,
+					Rank:     selfRank,
+				},
+			}
+			data, err := json.Marshal(dialogContext)
+			if err != nil {
+				return errors.Wrap(err, "marshal dialog context")
+			}
+			dialog = append(dialog, openrouter.UserMessage(string(data)))
+		}
+
 		resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
-			Model: "deepseek/deepseek-v4-flash",
-			Messages: []openrouter.ChatCompletionMessage{
-				openrouter.SystemMessage(prompt.Character),
-				openrouter.UserMessage(m.Message),
-			},
+			Model:    "deepseek/deepseek-v4-flash",
+			Messages: dialog,
 		})
 		if err != nil {
 			return errors.Wrap(err, "generate content")
 		}
+
 		replyText := resp.Choices[0].Message.Content.Text
 		replyUpdate, err := reply.Text(ctx, replyText)
 		if err != nil {
 			return errors.Wrap(err, "send reply")
 		}
 
-		if v, ok := replyUpdate.(*tg.UpdateShortSentMessage); ok && chatFull != nil {
+		if v, ok := replyUpdate.(*tg.UpdateShortSentMessage); ok {
 			if err := a.db.SaveMessage(ctx, svetik.Message{
 				ChatID:    chatFull.ID,
 				MessageID: int64(v.ID),
