@@ -67,7 +67,11 @@ func (a *Application) Run(ctx context.Context) error {
 				Commands: []tg.BotCommand{
 					{
 						Command:     "start",
-						Description: "Start bot",
+						Description: "Начать",
+					},
+					{
+						Command:     "lobotomy",
+						Description: "Очистить память",
 					},
 				},
 			}); err != nil {
@@ -291,6 +295,10 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 	switch m.Message {
 	case "/start", "/start@" + a.self.Username:
 		if _, err := reply.Text(ctx, "Привет, "+user.FirstName+"!"); err != nil {
+			return errors.Wrap(err, "send message")
+		}
+	case "/lobotomy", "/lobotomy@" + a.self.Username:
+		if _, err := reply.Text(ctx, "Не реализовано"); err != nil {
 			return errors.Wrap(err, "send message")
 		}
 	default:
