@@ -132,14 +132,108 @@ func extractUserID(m *tg.Message) (int64, bool) {
 	return 0, false
 }
 
-func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.UpdateNewMessage) error {
+// chatContext holds resolved information about the chat and the message author's role.
+type chatContext struct {
+	chatID        int64
+	chatInfo      string
+	selfRank      string
+	userIsAdmin   bool
+	userIsCreator bool
+	userRank      string
+}
+
+func (a *Application) resolveRegularChat(ctx context.Context, chatID int64, userID int64) (*chatContext, error) {
+	full, err := a.api.MessagesGetFullChat(ctx, chatID)
+	if err != nil {
+		return nil, errors.Wrap(err, "get full chat")
+	}
+
+	chatFull, ok := full.FullChat.(*tg.ChatFull)
+	if !ok {
+		return nil, errors.New("unexpected full chat type")
+	}
+
+	cc := &chatContext{
+		chatID:   chatFull.ID,
+		chatInfo: chatFull.About,
+	}
+
+	if v, ok := chatFull.Participants.(*tg.ChatParticipants); ok {
+		for _, participant := range v.Participants {
+			var (
+				id        int64
+				isAdmin   bool
+				isCreator bool
+				rank      string
+			)
+
+			switch p := participant.(type) {
+			case *tg.ChatParticipantAdmin:
+				id = p.UserID
+				isAdmin = true
+				rank = p.Rank
+			case *tg.ChatParticipantCreator:
+				id = p.UserID
+				isCreator = true
+				rank = p.Rank
+			case *tg.ChatParticipant:
+				id = p.UserID
+			}
+
+			if id == a.self.ID {
+				cc.selfRank = rank
+			}
+
+			if id == userID {
+				cc.userIsAdmin = isAdmin
+				cc.userIsCreator = isCreator
+				cc.userRank = rank
+			}
+		}
+	}
+
+	return cc, nil
+}
+
+func (a *Application) resolveChannel(ctx context.Context, channel *tg.Channel, userID int64) (*chatContext, error) {
+	if err := a.fetchChannelParticipants(ctx, channel); err != nil {
+		return nil, errors.Wrap(err, "fetch channel participants")
+	}
+
+	cc := &chatContext{
+		chatID:   channel.ID,
+		chatInfo: channel.Title,
+	}
+
+	if self, err := a.db.GetChatMember(ctx, channel.ID, a.self.ID); err == nil {
+		cc.selfRank = self.Rank
+	}
+
+	if member, err := a.db.GetChatMember(ctx, channel.ID, userID); err == nil {
+		cc.userIsAdmin = member.IsAdmin
+		cc.userIsCreator = member.IsCreator
+		cc.userRank = member.Rank
+	}
+
+	return cc, nil
+}
+
+func (a *Application) resolveChatContext(ctx context.Context, e tg.Entities, userID int64) (*chatContext, error) {
+	for _, chat := range e.Chats {
+		return a.resolveRegularChat(ctx, chat.ID, userID)
+	}
+
+	for _, channel := range e.Channels {
+		return a.resolveChannel(ctx, channel, userID)
+	}
+
+	return nil, errors.New("no chat or channel in entities")
+}
+
+func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u message.AnswerableMessageUpdate) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
 
-	m, ok := u.Message.(*tg.Message)
-	if !ok {
-		return nil
-	}
 	var (
 		sender = message.NewSender(a.api)
 		reply  = sender.Reply(e, u)
@@ -155,10 +249,12 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 		}
 		return nil
 	}
+
 	user := e.Users[userID]
 	if user == nil {
 		return nil
 	}
+
 	lg.Info("New message",
 		zap.String("text", m.Message),
 		zap.String("user", user.Username),
@@ -167,88 +263,35 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 		zap.Int64("user_id", user.ID),
 	)
 
-	var chatFull *tg.ChatFull
-
-	for _, chat := range e.Chats {
-		full, err := a.api.MessagesGetFullChat(ctx, chat.ID)
-		if err != nil {
-			lg.Warn("Failed to get full chat", zap.Int64("chat_id", chat.ID), zap.Error(err))
-			continue
-		}
-
-		if v, ok := full.FullChat.(*tg.ChatFull); ok {
-			chatFull = v
-		}
-
-		break
-	}
-
-	if chatFull == nil {
-		lg.Warn("Failed to find full chat")
+	cc, err := a.resolveChatContext(ctx, e, user.ID)
+	if err != nil {
+		lg.Warn("Failed to resolve chat context", zap.Error(err))
 		return nil
 	}
 
-	var (
-		userIsAdmin   bool
-		userIsCreator bool
-		userRank      string
-		selfRank      string
+	lg.Info("Chat context resolved",
+		zap.Int64("chat_id", cc.chatID),
+		zap.String("chat_info", cc.chatInfo),
 	)
 
-	if v, ok := chatFull.Participants.(*tg.ChatParticipants); ok {
-		for _, participant := range v.Participants {
-			var (
-				id        int64
-				isAdmin   bool
-				isCreator bool
-				rank      string
-			)
-			switch p := participant.(type) {
-			case *tg.ChatParticipantAdmin:
-				id = p.UserID
-				isAdmin = true
-				rank = p.Rank
-			case *tg.ChatParticipantCreator:
-				id = p.UserID
-				isCreator = true
-				rank = p.Rank
-			case *tg.ChatParticipant:
-				id = p.UserID
-				isCreator = false
-				rank = p.Rank
-			}
-			if id == a.self.ID {
-				selfRank = rank
-			}
-			if id == user.ID {
-				userIsAdmin = isAdmin
-				userIsCreator = isCreator
-				userRank = rank
-			}
-		}
-	}
-
-	lg.Info("Full chat info",
-		zap.Int64("chat_id", chatFull.ID),
-		zap.String("about", chatFull.About),
-	)
 	if err := a.db.UpsertChat(ctx, svetik.Chat{
-		ID:   chatFull.ID,
-		Info: chatFull.About,
+		ID:   cc.chatID,
+		Info: cc.chatInfo,
 	}); err != nil {
-		return errors.Wrap(err, "failed to upsert chat")
+		return errors.Wrap(err, "upsert chat")
 	}
+
 	if err := a.db.UpsertChatMember(ctx, svetik.ChatMember{
-		ChatID:    chatFull.ID,
+		ChatID:    cc.chatID,
 		UserID:    user.ID,
 		Username:  user.Username,
 		FirstName: user.FirstName,
 		LastName:  user.LastName,
-		IsAdmin:   userIsAdmin,
-		IsCreator: userIsCreator,
-		Rank:      userRank,
+		IsAdmin:   cc.userIsAdmin,
+		IsCreator: cc.userIsCreator,
+		Rank:      cc.userRank,
 	}); err != nil {
-		return errors.Wrap(err, "failed to upsert chat member")
+		return errors.Wrap(err, "upsert chat member")
 	}
 
 	var (
@@ -266,18 +309,20 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 			replyToText = &replyHeader.QuoteText
 		}
 
-		msg, err := a.db.GetMessage(ctx, chatFull.ID, int64(replyHeader.ReplyToMsgID))
+		msg, err := a.db.GetMessage(ctx, cc.chatID, int64(replyHeader.ReplyToMsgID))
 		if err != nil {
-			return errors.Wrap(err, "get message")
-		}
-
-		if msg.IsMyself {
+			zctx.From(ctx).Warn("Reply-to message not found in db",
+				zap.Int64("chat_id", cc.chatID),
+				zap.Int("reply_to_msg_id", replyHeader.ReplyToMsgID),
+				zap.Error(err),
+			)
+		} else if msg.IsMyself {
 			replyToMyself = &msg.IsMyself
 		}
 	}
 
 	if err := a.db.SaveMessage(ctx, svetik.Message{
-		ChatID:        chatFull.ID,
+		ChatID:        cc.chatID,
 		MessageID:     int64(m.ID),
 		Text:          m.Message,
 		IsMyself:      m.Out,
@@ -328,29 +373,32 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 			}, "\n")),
 		}
 
-		lastMessages, err := a.db.GetLastMessages(ctx, chatFull.ID, 150)
+		lastMessages, err := a.db.GetLastMessages(ctx, cc.chatID, 150)
 		if err != nil {
 			return errors.Wrap(err, "get last messages")
 		}
 
 		for _, msg := range lastMessages {
-			member, err := a.db.GetChatMember(ctx, chatFull.ID, user.ID)
+			member, err := a.db.GetChatMember(ctx, cc.chatID, user.ID)
 			if err != nil {
 				return errors.Wrap(err, "get member")
 			}
+
 			dialogContext := svetik.Context{
 				Message: &msg,
 				User:    member,
 				Self: &svetik.Self{
 					Name:     a.self.FirstName,
 					Nickname: a.self.Username,
-					Rank:     selfRank,
+					Rank:     cc.selfRank,
 				},
 			}
+
 			data, err := json.Marshal(dialogContext)
 			if err != nil {
 				return errors.Wrap(err, "marshal dialog context")
 			}
+
 			dialog = append(dialog, openrouter.UserMessage(string(data)))
 		}
 
@@ -370,6 +418,7 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 				}
 			}
 		}()
+
 		resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
 			Model:    "deepseek/deepseek-v4-flash",
 			Messages: dialog,
@@ -386,9 +435,10 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 			return errors.Wrap(err, "send reply")
 		}
 
-		if v, ok := replyUpdate.(*tg.UpdateShortSentMessage); ok {
+		switch v := replyUpdate.(type) {
+		case *tg.UpdateShortSentMessage:
 			if err := a.db.SaveMessage(ctx, svetik.Message{
-				ChatID:    chatFull.ID,
+				ChatID:    cc.chatID,
 				MessageID: int64(v.ID),
 				Text:      replyText,
 				ReplyToID: svetik.T(int64(m.ID)),
@@ -396,10 +446,149 @@ func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.Upd
 			}); err != nil {
 				lg.Error("save sent message", zap.Error(err))
 			}
+		case *tg.Updates:
+			for _, update := range v.Updates {
+				switch upd := update.(type) {
+				case *tg.UpdateMessageID:
+					if err := a.db.SaveMessage(ctx, svetik.Message{
+						ChatID:    cc.chatID,
+						MessageID: int64(upd.ID),
+						Text:      replyText,
+						ReplyToID: svetik.T(int64(m.ID)),
+						IsMyself:  true,
+					}); err != nil {
+						lg.Error("save sent message", zap.Error(err))
+					}
+				}
+			}
+		default:
+			lg.Warn("Unexpected replyUpdate type",
+				zap.String("t", fmt.Sprintf("%T", replyUpdate)),
+			)
 		}
 	}
 
 	return nil
+}
+
+func (a *Application) fetchChannelParticipants(ctx context.Context, channel *tg.Channel) error {
+	const limit = 200
+
+	inputChannel := &tg.InputChannel{
+		ChannelID:  channel.ID,
+		AccessHash: channel.AccessHash,
+	}
+
+	if err := a.db.UpsertChat(ctx, svetik.Chat{
+		ID:   channel.ID,
+		Info: channel.Title,
+	}); err != nil {
+		return errors.Wrap(err, "upsert chat")
+	}
+
+	lg := zctx.From(ctx).With(zap.Int64("channel_id", channel.ID))
+
+	for offset := 0; ; {
+		result, err := a.api.ChannelsGetParticipants(ctx, &tg.ChannelsGetParticipantsRequest{
+			Channel: inputChannel,
+			Filter:  &tg.ChannelParticipantsRecent{},
+			Offset:  offset,
+			Limit:   limit,
+		})
+		if err != nil {
+			return errors.Wrap(err, "get participants")
+		}
+
+		participants, ok := result.(*tg.ChannelsChannelParticipants)
+		if !ok {
+			// Not modified or empty.
+			return nil
+		}
+
+		users := make(map[int64]*tg.User, len(participants.Users))
+		for _, u := range participants.Users {
+			if user, ok := u.(*tg.User); ok {
+				users[user.ID] = user
+			}
+		}
+
+		for _, p := range participants.Participants {
+			var (
+				userID    int64
+				isAdmin   bool
+				isCreator bool
+				rank      string
+			)
+
+			switch v := p.(type) {
+			case *tg.ChannelParticipant:
+				userID = v.UserID
+			case *tg.ChannelParticipantSelf:
+				userID = v.UserID
+			case *tg.ChannelParticipantCreator:
+				userID = v.UserID
+				isCreator = true
+				rank = v.Rank
+			case *tg.ChannelParticipantAdmin:
+				userID = v.UserID
+				isAdmin = true
+				rank = v.Rank
+			default:
+				// Banned or left — skip.
+				continue
+			}
+
+			user, ok := users[userID]
+			if !ok {
+				continue
+			}
+
+			if err := a.db.UpsertChatMember(ctx, svetik.ChatMember{
+				ChatID:    channel.ID,
+				UserID:    userID,
+				Username:  user.Username,
+				FirstName: user.FirstName,
+				LastName:  user.LastName,
+				IsAdmin:   isAdmin,
+				IsCreator: isCreator,
+				Rank:      rank,
+			}); err != nil {
+				return errors.Wrap(err, "upsert chat member")
+			}
+		}
+
+		lg.Info("Fetched channel participants",
+			zap.Int("offset", offset),
+			zap.Int("count", len(participants.Participants)),
+			zap.Int("total", participants.Count),
+		)
+
+		offset += len(participants.Participants)
+
+		if len(participants.Participants) < limit {
+			break
+		}
+	}
+
+	return nil
+}
+
+func (a *Application) onNewChannelMessage(ctx context.Context, e tg.Entities, u *tg.UpdateNewChannelMessage) error {
+	m, ok := u.Message.(*tg.Message)
+	if !ok {
+		return nil
+	}
+
+	return a.onMessage(ctx, e, m, u)
+}
+
+func (a *Application) onNewMessage(ctx context.Context, e tg.Entities, u *tg.UpdateNewMessage) error {
+	m, ok := u.Message.(*tg.Message)
+	if !ok {
+		return nil
+	}
+
+	return a.onMessage(ctx, e, m, u)
 }
 
 func newJSONSessionStorage(filePath string) (*jsonSessionStorage, error) {
@@ -530,6 +719,7 @@ func Root() *cobra.Command {
 				}
 				dispatcher.OnChannelParticipant(a.onChannelParticipant)
 				dispatcher.OnNewMessage(a.onNewMessage)
+				dispatcher.OnNewChannelMessage(a.onNewChannelMessage)
 				return a.Run(ctx)
 			},
 				app.WithZapConfig(func() zap.Config {
