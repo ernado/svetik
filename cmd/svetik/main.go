@@ -432,6 +432,9 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		}
 
 		replyText := resp.Choices[0].Message.Content.Text
+		if strings.TrimSpace(replyText) == "" {
+			return nil
+		}
 		replyUpdate, err := reply.Text(ctx, replyText)
 		if err != nil {
 			return errors.Wrap(err, "send reply")
