@@ -1,0 +1,3 @@
+ALTER TABLE chat
+    ADD COLUMN last_notes_msg_id BIGINT NOT NULL DEFAULT 0;
+

@@ -86,3 +86,23 @@ func (db *DB) DeleteChatNote(ctx context.Context, chatID, noteID int64) error {
 
 	return nil
 }
+
+// TrimChatNotes removes the oldest notes for a chat, keeping at most maxNotes.
+func (db *DB) TrimChatNotes(ctx context.Context, chatID int64, maxNotes int) error {
+	q := psql.Delete("chat_notes").
+		Where(
+			"id IN (SELECT id FROM chat_notes WHERE chat_id = ? ORDER BY id ASC LIMIT (GREATEST(0, (SELECT COUNT(*) FROM chat_notes WHERE chat_id = ?) - ?)))",
+			chatID, chatID, maxNotes,
+		)
+
+	sql, args, err := q.ToSql()
+	if err != nil {
+		return errors.Wrap(err, "build query")
+	}
+
+	if _, err := db.pgx.Exec(ctx, sql, args...); err != nil {
+		return errors.Wrap(err, "exec")
+	}
+
+	return nil
+}

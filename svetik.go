@@ -4,8 +4,9 @@ import "time"
 
 // Chat represents a Telegram chat.
 type Chat struct {
-	ID   int64
-	Info string
+	ID             int64
+	Info           string
+	LastNotesMsgID int64
 }
 
 // ChatNote represents a note attached to a chat.
