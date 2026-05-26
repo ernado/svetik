@@ -9,7 +9,7 @@ import (
 )
 
 // AddChatNote inserts a new note for the given chat and returns the created note.
-func (db *DB) AddChatNote(ctx context.Context, chatID int64, text string) (*svetik.ChatNote, error) {
+func (db *DB) AddChatNote(ctx context.Context, chatID int64, text string) (*lilith.ChatNote, error) {
 	q := psql.Insert("chat_notes").
 		Columns("chat_id", "text").
 		Values(chatID, text).
@@ -20,7 +20,7 @@ func (db *DB) AddChatNote(ctx context.Context, chatID int64, text string) (*svet
 		return nil, errors.Wrap(err, "build query")
 	}
 
-	var note svetik.ChatNote
+	var note lilith.ChatNote
 
 	if err := db.pgx.QueryRow(ctx, sql, args...).Scan(
 		&note.ID,
@@ -34,7 +34,7 @@ func (db *DB) AddChatNote(ctx context.Context, chatID int64, text string) (*svet
 }
 
 // GetChatNotes returns all notes for the given chat.
-func (db *DB) GetChatNotes(ctx context.Context, chatID int64) ([]svetik.ChatNote, error) {
+func (db *DB) GetChatNotes(ctx context.Context, chatID int64) ([]lilith.ChatNote, error) {
 	q := psql.Select("id", "chat_id", "text").
 		From("chat_notes").
 		Where("chat_id = ?", chatID).
@@ -51,10 +51,10 @@ func (db *DB) GetChatNotes(ctx context.Context, chatID int64) ([]svetik.ChatNote
 	}
 	defer rows.Close()
 
-	var notes []svetik.ChatNote
+	var notes []lilith.ChatNote
 
 	for rows.Next() {
-		var note svetik.ChatNote
+		var note lilith.ChatNote
 
 		if err := rows.Scan(&note.ID, &note.ChatID, &note.Text); err != nil {
 			return nil, errors.Wrap(err, "scan")

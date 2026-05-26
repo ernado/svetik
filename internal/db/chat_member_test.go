@@ -12,10 +12,10 @@ type ChatMemberTestSuite struct {
 	DBTestSuite
 }
 
-func (suite *ChatMemberTestSuite) chat() svetik.Chat {
+func (suite *ChatMemberTestSuite) chat() lilith.Chat {
 	ctx := suite.T().Context()
 
-	chat := svetik.Chat{
+	chat := lilith.Chat{
 		ID:   1,
 		Info: "test chat",
 	}
@@ -29,7 +29,7 @@ func (suite *ChatMemberTestSuite) TestUpsertChatMember_Insert() {
 	ctx := suite.T().Context()
 
 	chat := suite.chat()
-	member := svetik.ChatMember{
+	member := lilith.ChatMember{
 		ChatID:    chat.ID,
 		UserID:    42,
 		Username:  "johndoe",
@@ -52,7 +52,7 @@ func (suite *ChatMemberTestSuite) TestUpsertChatMember_Update() {
 	ctx := suite.T().Context()
 
 	chat := suite.chat()
-	member := svetik.ChatMember{
+	member := lilith.ChatMember{
 		ChatID:    chat.ID,
 		UserID:    42,
 		Username:  "johndoe",

@@ -9,7 +9,7 @@ import (
 )
 
 // UpsertChat inserts or updates a chat record.
-func (db *DB) UpsertChat(ctx context.Context, chat svetik.Chat) error {
+func (db *DB) UpsertChat(ctx context.Context, chat lilith.Chat) error {
 	q := psql.Insert("chat").
 		Columns("id", "info").
 		Values(chat.ID, chat.Info).
@@ -28,7 +28,7 @@ func (db *DB) UpsertChat(ctx context.Context, chat svetik.Chat) error {
 }
 
 // GetChat returns a chat by ID.
-func (db *DB) GetChat(ctx context.Context, id int64) (*svetik.Chat, error) {
+func (db *DB) GetChat(ctx context.Context, id int64) (*lilith.Chat, error) {
 	q := psql.Select("id", "info", "last_notes_msg_id").
 		From("chat").
 		Where("id = ?", id)
@@ -38,7 +38,7 @@ func (db *DB) GetChat(ctx context.Context, id int64) (*svetik.Chat, error) {
 		return nil, errors.Wrap(err, "build query")
 	}
 
-	var chat svetik.Chat
+	var chat lilith.Chat
 
 	err = db.pgx.QueryRow(ctx, sql, args...).Scan(&chat.ID, &chat.Info, &chat.LastNotesMsgID)
 	if err != nil {

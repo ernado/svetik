@@ -34,7 +34,7 @@ type Application struct {
 	api    *tg.Client
 	client *telegram.Client
 	ai     *openrouter.Client
-	db     svetik.DB
+	db     lilith.DB
 	self   *tg.User
 
 	model string
@@ -276,14 +276,14 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		zap.String("chat_info", cc.chatInfo),
 	)
 
-	if err := a.db.UpsertChat(ctx, svetik.Chat{
+	if err := a.db.UpsertChat(ctx, lilith.Chat{
 		ID:   cc.chatID,
 		Info: cc.chatInfo,
 	}); err != nil {
 		return errors.Wrap(err, "upsert chat")
 	}
 
-	if err := a.db.UpsertChatMember(ctx, svetik.ChatMember{
+	if err := a.db.UpsertChatMember(ctx, lilith.ChatMember{
 		ChatID:    cc.chatID,
 		UserID:    user.ID,
 		Username:  user.Username,
@@ -323,7 +323,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		}
 	}
 
-	if err := a.db.SaveMessage(ctx, svetik.Message{
+	if err := a.db.SaveMessage(ctx, lilith.Message{
 		ChatID:        cc.chatID,
 		MessageID:     int64(m.ID),
 		UserID:        user.ID,
@@ -358,10 +358,10 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		}
 
 		for _, name := range []string{
-			"светик",
-			"света",
+			"лилит",
+			"лиля",
 		} {
-			if strings.HasPrefix(strings.ToLower(m.Message), name) {
+			if strings.Contains(strings.ToLower(m.Message), name) {
 				shouldResponse = true
 			}
 		}
@@ -388,10 +388,10 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 				return errors.Wrap(err, "get member")
 			}
 
-			dialogContext := svetik.Context{
+			dialogContext := lilith.Context{
 				Message: &msg,
 				User:    member,
-				Self: &svetik.Self{
+				Self: &lilith.Self{
 					Name:     a.self.FirstName,
 					Nickname: a.self.Username,
 					Rank:     cc.selfRank,
@@ -444,13 +444,13 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 
 		switch v := replyUpdate.(type) {
 		case *tg.UpdateShortSentMessage:
-			if err := a.db.SaveMessage(ctx, svetik.Message{
+			if err := a.db.SaveMessage(ctx, lilith.Message{
 				ChatID:    cc.chatID,
 				MessageID: int64(v.ID),
 				UserID:    a.self.ID,
 				Date:      time.Unix(int64(v.Date), 0),
 				Text:      replyText,
-				ReplyToID: svetik.T(int64(m.ID)),
+				ReplyToID: lilith.T(int64(m.ID)),
 				IsMyself:  true,
 			}); err != nil {
 				lg.Error("save sent message", zap.Error(err))
@@ -459,13 +459,13 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			for _, update := range v.Updates {
 				switch upd := update.(type) {
 				case *tg.UpdateMessageID:
-					if err := a.db.SaveMessage(ctx, svetik.Message{
+					if err := a.db.SaveMessage(ctx, lilith.Message{
 						ChatID:    cc.chatID,
 						MessageID: int64(upd.ID),
 						UserID:    a.self.ID,
 						Date:      time.Now(),
 						Text:      replyText,
-						ReplyToID: svetik.T(int64(m.ID)),
+						ReplyToID: lilith.T(int64(m.ID)),
 						IsMyself:  true,
 					}); err != nil {
 						lg.Error("save sent message", zap.Error(err))
@@ -490,7 +490,7 @@ func (a *Application) fetchChannelParticipants(ctx context.Context, channel *tg.
 		AccessHash: channel.AccessHash,
 	}
 
-	if err := a.db.UpsertChat(ctx, svetik.Chat{
+	if err := a.db.UpsertChat(ctx, lilith.Chat{
 		ID:   channel.ID,
 		Info: channel.Title,
 	}); err != nil {
@@ -554,7 +554,7 @@ func (a *Application) fetchChannelParticipants(ctx context.Context, channel *tg.
 				continue
 			}
 
-			if err := a.db.UpsertChatMember(ctx, svetik.ChatMember{
+			if err := a.db.UpsertChatMember(ctx, lilith.ChatMember{
 				ChatID:    channel.ID,
 				UserID:    userID,
 				Username:  user.Username,

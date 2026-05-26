@@ -15,7 +15,7 @@ type ChatTestSuite struct {
 func (suite *ChatTestSuite) TestUpsertChat_Insert() {
 	ctx := suite.T().Context()
 
-	chat := svetik.Chat{
+	chat := lilith.Chat{
 		ID:   1,
 		Info: "test chat",
 	}
@@ -31,7 +31,7 @@ func (suite *ChatTestSuite) TestUpsertChat_Insert() {
 func (suite *ChatTestSuite) TestUpsertChat_Update() {
 	ctx := suite.T().Context()
 
-	chat := svetik.Chat{
+	chat := lilith.Chat{
 		ID:   1,
 		Info: "original info",
 	}

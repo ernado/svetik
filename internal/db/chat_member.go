@@ -9,7 +9,7 @@ import (
 )
 
 // UpsertChatMember inserts or updates a chat member record.
-func (db *DB) UpsertChatMember(ctx context.Context, m svetik.ChatMember) error {
+func (db *DB) UpsertChatMember(ctx context.Context, m lilith.ChatMember) error {
 	q := psql.Insert("chat_members").
 		Columns(
 			"chat_id",
@@ -52,7 +52,7 @@ func (db *DB) UpsertChatMember(ctx context.Context, m svetik.ChatMember) error {
 }
 
 // GetChatMember returns a chat member by chat ID and user ID.
-func (db *DB) GetChatMember(ctx context.Context, chatID, userID int64) (*svetik.ChatMember, error) {
+func (db *DB) GetChatMember(ctx context.Context, chatID, userID int64) (*lilith.ChatMember, error) {
 	q := psql.Select(
 		"chat_id",
 		"user_id",
@@ -71,7 +71,7 @@ func (db *DB) GetChatMember(ctx context.Context, chatID, userID int64) (*svetik.
 		return nil, errors.Wrap(err, "build query")
 	}
 
-	var m svetik.ChatMember
+	var m lilith.ChatMember
 
 	err = db.pgx.QueryRow(ctx, sql, args...).Scan(
 		&m.ChatID,

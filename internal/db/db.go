@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var _ svetik.DB = (*DB)(nil)
+var _ lilith.DB = (*DB)(nil)
 
 var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 

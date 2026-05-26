@@ -12,10 +12,10 @@ type MessageTestSuite struct {
 	DBTestSuite
 }
 
-func (suite *MessageTestSuite) chat() svetik.Chat {
+func (suite *MessageTestSuite) chat() lilith.Chat {
 	ctx := suite.T().Context()
 
-	chat := svetik.Chat{
+	chat := lilith.Chat{
 		ID:   1,
 		Info: "test chat",
 	}
@@ -29,7 +29,7 @@ func (suite *MessageTestSuite) TestSaveMessage_Insert() {
 	ctx := suite.T().Context()
 
 	chat := suite.chat()
-	msg := svetik.Message{
+	msg := lilith.Message{
 		ChatID:    chat.ID,
 		MessageID: 100,
 		Text:      "hello",
@@ -48,7 +48,7 @@ func (suite *MessageTestSuite) TestSaveMessage_DoNothingOnConflict() {
 	ctx := suite.T().Context()
 
 	chat := suite.chat()
-	msg := svetik.Message{
+	msg := lilith.Message{
 		ChatID:    chat.ID,
 		MessageID: 100,
 		Text:      "original text",
@@ -72,13 +72,13 @@ func (suite *MessageTestSuite) TestSaveMessage_WithReply() {
 	ctx := suite.T().Context()
 
 	chat := suite.chat()
-	msg := svetik.Message{
+	msg := lilith.Message{
 		ChatID:      chat.ID,
 		MessageID:   200,
 		Text:        "reply message",
 		IsMyself:    true,
-		ReplyToID:   svetik.T(int64(100)),
-		ReplyToText: svetik.T("quoted text"),
+		ReplyToID:   lilith.T(int64(100)),
+		ReplyToText: lilith.T("quoted text"),
 	}
 
 	err := suite.db.SaveMessage(ctx, msg)
@@ -105,7 +105,7 @@ func (suite *MessageTestSuite) TestGetLastMessages_LessThanN() {
 	chat := suite.chat()
 
 	for i := int64(1); i <= 3; i++ {
-		err := suite.db.SaveMessage(ctx, svetik.Message{
+		err := suite.db.SaveMessage(ctx, lilith.Message{
 			ChatID:    chat.ID,
 			MessageID: i,
 			Text:      "msg",
@@ -127,7 +127,7 @@ func (suite *MessageTestSuite) TestGetLastMessages_ReturnsLastN() {
 	chat := suite.chat()
 
 	for i := int64(1); i <= 5; i++ {
-		err := suite.db.SaveMessage(ctx, svetik.Message{
+		err := suite.db.SaveMessage(ctx, lilith.Message{
 			ChatID:    chat.ID,
 			MessageID: i,
 			Text:      "msg",
@@ -149,7 +149,7 @@ func (suite *MessageTestSuite) TestGetLastMessages_AscendingOrder() {
 	chat := suite.chat()
 
 	for _, id := range []int64{10, 20, 30} {
-		err := suite.db.SaveMessage(ctx, svetik.Message{
+		err := suite.db.SaveMessage(ctx, lilith.Message{
 			ChatID:    chat.ID,
 			MessageID: id,
 			Text:      "msg",

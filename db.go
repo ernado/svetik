@@ -1,4 +1,4 @@
-package svetik
+package lilith
 
 import "context"
 

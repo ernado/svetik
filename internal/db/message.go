@@ -9,7 +9,7 @@ import (
 )
 
 // SaveMessage inserts a chat message record, doing nothing on conflict.
-func (db *DB) SaveMessage(ctx context.Context, msg svetik.Message) error {
+func (db *DB) SaveMessage(ctx context.Context, msg lilith.Message) error {
 	q := psql.Insert("chat_messages").
 		Columns(
 			"chat_id",
@@ -48,7 +48,7 @@ func (db *DB) SaveMessage(ctx context.Context, msg svetik.Message) error {
 }
 
 // GetLastMessages returns the last n messages for a given chat ID, ordered by message_id ascending.
-func (db *DB) GetLastMessages(ctx context.Context, chatID int64, n uint64) ([]svetik.Message, error) {
+func (db *DB) GetLastMessages(ctx context.Context, chatID int64, n uint64) ([]lilith.Message, error) {
 	q := psql.Select(
 		"chat_id",
 		"message_id",
@@ -76,10 +76,10 @@ func (db *DB) GetLastMessages(ctx context.Context, chatID int64, n uint64) ([]sv
 	}
 	defer rows.Close()
 
-	var msgs []svetik.Message
+	var msgs []lilith.Message
 
 	for rows.Next() {
-		var msg svetik.Message
+		var msg lilith.Message
 
 		if err := rows.Scan(
 			&msg.ChatID,
@@ -111,7 +111,7 @@ func (db *DB) GetLastMessages(ctx context.Context, chatID int64, n uint64) ([]sv
 }
 
 // GetMessage returns a message by chat ID and message ID.
-func (db *DB) GetMessage(ctx context.Context, chatID, messageID int64) (*svetik.Message, error) {
+func (db *DB) GetMessage(ctx context.Context, chatID, messageID int64) (*lilith.Message, error) {
 	q := psql.Select(
 		"chat_id",
 		"message_id",
@@ -131,7 +131,7 @@ func (db *DB) GetMessage(ctx context.Context, chatID, messageID int64) (*svetik.
 		return nil, errors.Wrap(err, "build query")
 	}
 
-	var msg svetik.Message
+	var msg lilith.Message
 
 	err = db.pgx.QueryRow(ctx, sql, args...).Scan(
 		&msg.ChatID,
