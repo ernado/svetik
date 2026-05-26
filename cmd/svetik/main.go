@@ -37,6 +37,8 @@ type Application struct {
 	db     svetik.DB
 	self   *tg.User
 
+	model string
+
 	waiter *floodwait.Waiter
 	trace  trace.Tracer
 }
@@ -422,7 +424,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		}()
 
 		resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
-			Model:    "deepseek/deepseek-v4-flash",
+			Model:    a.model,
 			Messages: dialog,
 		})
 		close(done)
@@ -710,6 +712,10 @@ func Root() *cobra.Command {
 					},
 				})
 				ai := openrouter.NewClient(os.Getenv("AI_TOKEN"))
+				aiModel := os.Getenv("AI_MODEL")
+				if aiModel == "" {
+					aiModel = "deepseek/deepseek-v4-flash"
+				}
 				databaseConnection, err := db.Open(ctx, databaseURI, t)
 				if err != nil {
 					return errors.Wrap(err, "open database")
@@ -721,6 +727,7 @@ func Root() *cobra.Command {
 				a := &Application{
 					api:    tg.NewClient(client),
 					ai:     ai,
+					model:  aiModel,
 					db:     db.New(databaseConnection),
 					client: client,
 					waiter: waiter,
