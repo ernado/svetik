@@ -1,6 +1,7 @@
 package db
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
@@ -94,7 +95,7 @@ func (suite *MessageTestSuite) TestGetLastMessages_Empty() {
 
 	chat := suite.chat()
 
-	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 10)
+	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 10, math.MaxInt64)
 	suite.Require().NoError(err)
 	suite.Empty(msgs)
 }
@@ -113,7 +114,7 @@ func (suite *MessageTestSuite) TestGetLastMessages_LessThanN() {
 		suite.Require().NoError(err)
 	}
 
-	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 10)
+	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 10, math.MaxInt64)
 	suite.Require().NoError(err)
 	suite.Require().Len(msgs, 3)
 	suite.Equal(int64(1), msgs[0].MessageID)
@@ -135,7 +136,7 @@ func (suite *MessageTestSuite) TestGetLastMessages_ReturnsLastN() {
 		suite.Require().NoError(err)
 	}
 
-	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 3)
+	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 3, math.MaxInt64)
 	suite.Require().NoError(err)
 	suite.Require().Len(msgs, 3)
 	suite.Equal(int64(3), msgs[0].MessageID)
@@ -157,12 +158,34 @@ func (suite *MessageTestSuite) TestGetLastMessages_AscendingOrder() {
 		suite.Require().NoError(err)
 	}
 
-	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 3)
+	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 3, math.MaxInt64)
 	suite.Require().NoError(err)
 	suite.Require().Len(msgs, 3)
 	suite.Equal(int64(10), msgs[0].MessageID)
 	suite.Equal(int64(20), msgs[1].MessageID)
 	suite.Equal(int64(30), msgs[2].MessageID)
+}
+
+func (suite *MessageTestSuite) TestGetLastMessages_LastMessageIDCutoff() {
+	ctx := suite.T().Context()
+
+	chat := suite.chat()
+
+	for i := int64(1); i <= 5; i++ {
+		err := suite.db.SaveMessage(ctx, lilith.Message{
+			ChatID:    chat.ID,
+			MessageID: i,
+			Text:      "msg",
+		})
+		suite.Require().NoError(err)
+	}
+
+	msgs, err := suite.db.GetLastMessages(ctx, chat.ID, 10, 3)
+	suite.Require().NoError(err)
+	suite.Require().Len(msgs, 3)
+	suite.Equal(int64(1), msgs[0].MessageID)
+	suite.Equal(int64(2), msgs[1].MessageID)
+	suite.Equal(int64(3), msgs[2].MessageID)
 }
 
 func TestMessageTestSuite(t *testing.T) {

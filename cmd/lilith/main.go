@@ -392,6 +392,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			"лилит",
 			"лиля",
 			"лилия",
+			a.self.Username,
 		} {
 			if strings.Contains(strings.ToLower(m.Message), name) {
 				shouldResponse = true
@@ -409,7 +410,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			}, "\n")),
 		}
 
-		lastMessages, err := a.db.GetLastMessages(ctx, cc.chatID, 150)
+		lastMessages, err := a.db.GetLastMessages(ctx, cc.chatID, 150, int64(m.ID))
 		if err != nil {
 			return errors.Wrap(err, "get last messages")
 		}
@@ -464,21 +465,25 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		}()
 
 		resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
-			Model:    a.model,
-			Messages: dialog,
+			Model:     a.model,
+			Messages:  dialog,
+			MaxTokens: 300,
 		})
 		close(done)
 
 		if err != nil {
+			lg.Warn("Failed to send create action", zap.Error(err))
 			return errors.Wrap(err, "generate content")
 		}
 
 		replyText := resp.Choices[0].Message.Content.Text
 		if strings.TrimSpace(replyText) == "" {
+			lg.Warn("Empty response from AI")
 			return nil
 		}
 		replyUpdate, err := reply.Text(ctx, replyText)
 		if err != nil {
+			lg.Warn("Failed to send reply", zap.Error(err))
 			return errors.Wrap(err, "send reply")
 		}
 

@@ -47,8 +47,9 @@ func (db *DB) SaveMessage(ctx context.Context, msg lilith.Message) error {
 	return nil
 }
 
-// GetLastMessages returns the last n messages for a given chat ID, ordered by message_id ascending.
-func (db *DB) GetLastMessages(ctx context.Context, chatID int64, n uint64) ([]lilith.Message, error) {
+// GetLastMessages returns the last n messages for a given chat ID up to and including
+// lastMessageID, ordered by message_id ascending.
+func (db *DB) GetLastMessages(ctx context.Context, chatID int64, n uint64, lastMessageID int64) ([]lilith.Message, error) {
 	q := psql.Select(
 		"chat_id",
 		"message_id",
@@ -61,7 +62,7 @@ func (db *DB) GetLastMessages(ctx context.Context, chatID int64, n uint64) ([]li
 		"reply_to_myself",
 	).
 		From("chat_messages").
-		Where("chat_id = ?", chatID).
+		Where("chat_id = ? AND message_id <= ?", chatID, lastMessageID).
 		OrderBy("message_id DESC").
 		Limit(n)
 
