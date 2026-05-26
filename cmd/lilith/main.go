@@ -360,6 +360,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		for _, name := range []string{
 			"лилит",
 			"лиля",
+			"лилия",
 		} {
 			if strings.Contains(strings.ToLower(m.Message), name) {
 				shouldResponse = true
