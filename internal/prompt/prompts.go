@@ -10,3 +10,6 @@ var Protocol string
 
 //go:embed notes.md
 var Notes string
+
+//go:embed note_single.md
+var NoteSingle string

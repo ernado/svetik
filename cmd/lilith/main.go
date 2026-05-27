@@ -378,6 +378,79 @@ func (a *Application) doGenerateNotes(ctx context.Context, chatID, currentMsgID 
 	return nil
 }
 
+// generateNoteForMessage decides whether a single message is worth noting and,
+// if so, persists the note. The call is blocking and serialised per chat via
+// the shared notesSFG singleflight group.
+func (a *Application) generateNoteForMessage(ctx context.Context, chatID int64, msg lilith.Message) error {
+	key := "msg:" + strconv.FormatInt(msg.MessageID, 10)
+
+	_, err, _ := a.notesSFG.Do(key, func() (any, error) {
+		return nil, a.doGenerateNoteForMessage(ctx, chatID, msg)
+	})
+
+	return err
+}
+
+// doGenerateNoteForMessage is the actual (non-deduplicated) single-message note logic.
+func (a *Application) doGenerateNoteForMessage(ctx context.Context, chatID int64, msg lilith.Message) error {
+	lg := zctx.From(ctx).With(
+		zap.Int64("chat_id", chatID),
+		zap.Int64("msg_id", msg.MessageID),
+	)
+
+	existingNotes, err := a.db.GetChatNotes(ctx, chatID)
+	if err != nil {
+		return errors.Wrap(err, "get chat notes")
+	}
+
+	dialog := []openrouter.ChatCompletionMessage{
+		openrouter.SystemMessage(prompt.NoteSingle),
+	}
+
+	if len(existingNotes) > 0 {
+		var noteLines []string
+
+		for _, n := range existingNotes {
+			noteLines = append(noteLines, n.Text)
+		}
+
+		dialog = append(dialog, openrouter.SystemMessage(
+			"Существующие заметки:\n"+strings.Join(noteLines, "\n"),
+		))
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return errors.Wrap(err, "marshal message")
+	}
+
+	dialog = append(dialog, openrouter.UserMessage(string(data)))
+
+	resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
+		Model:     a.model,
+		Messages:  dialog,
+		MaxTokens: maxNotesTokens,
+	})
+	if err != nil {
+		return errors.Wrap(err, "generate note for message")
+	}
+
+	text := strings.TrimSpace(resp.Choices[0].Message.Content.Text)
+
+	if text == "" {
+		lg.Info("No note needed for message")
+		return nil
+	}
+
+	if _, err := a.db.AddChatNote(ctx, chatID, text); err != nil {
+		return errors.Wrap(err, "add chat note")
+	}
+
+	lg.Info("Note generated for message")
+
+	return nil
+}
+
 func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u message.AnswerableMessageUpdate) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
@@ -469,7 +542,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		}
 	}
 
-	if err := a.db.SaveMessage(ctx, lilith.Message{
+	savedMsg := lilith.Message{
 		ChatID:        cc.chatID,
 		MessageID:     int64(m.ID),
 		UserID:        user.ID,
@@ -479,7 +552,9 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		ReplyToID:     replyToID,
 		ReplyToText:   replyToText,
 		ReplyToMyself: replyToMyself,
-	}); err != nil {
+	}
+
+	if err := a.db.SaveMessage(ctx, savedMsg); err != nil {
 		lg.Error("save message", zap.Error(err))
 	}
 
@@ -523,6 +598,12 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			go func() {
 				if err := a.generateNotes(ctx, cc.chatID, int64(m.ID)); err != nil {
 					lg.Error("generate notes", zap.Error(err))
+				}
+			}()
+		} else {
+			go func() {
+				if err := a.generateNoteForMessage(ctx, cc.chatID, savedMsg); err != nil {
+					lg.Error("generate note for message", zap.Error(err))
 				}
 			}()
 		}
