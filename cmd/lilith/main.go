@@ -26,13 +26,25 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/ernado/svetik/internal/db"
 	"github.com/ernado/svetik/internal/prompt"
 )
 
-// channelParticipantsTTL is the minimum interval between participant list refreshes.
-const channelParticipantsTTL = 10 * time.Minute
+const (
+	// channelParticipantsTTL is the minimum interval between participant list refreshes.
+	channelParticipantsTTL = 10 * time.Minute
+
+	// chatContextWindowMessages is total messages passed to model context.
+	chatContextWindowMessages = 150
+
+	// maxTokens is the max_tokens parameter for the AI response, controlling its length.
+	maxTokens = 450
+
+	// maxNotesTokens is the max_tokens parameter for notes generation.
+	maxNotesTokens = 1024
+)
 
 type Application struct {
 	api    *tg.Client
@@ -49,6 +61,9 @@ type Application struct {
 	// channelParticipantsMu guards channelParticipantsFetchedAt.
 	channelParticipantsMu        sync.Mutex
 	channelParticipantsFetchedAt map[int64]time.Time
+
+	// notesSFG deduplicates concurrent note-generation calls for the same chat.
+	notesSFG singleflight.Group
 }
 
 func (a *Application) Run(ctx context.Context) error {
@@ -263,6 +278,106 @@ func (a *Application) resolveChatContext(ctx context.Context, e tg.Entities, use
 	return nil, errors.New("no chat or channel in entities")
 }
 
+// isNotesNeeded returns true when at least chatContextWindowMessages messages
+// have been recorded in the chat since the last notes snapshot.
+func (a *Application) isNotesNeeded(ctx context.Context, chatID, currentMsgID int64) (bool, error) {
+	chat, err := a.db.GetChat(ctx, chatID)
+	if err != nil {
+		return false, errors.Wrap(err, "get chat")
+	}
+
+	count, err := a.db.CountMessagesSince(ctx, chatID, chat.LastNotesMsgID, currentMsgID)
+	if err != nil {
+		return false, errors.Wrap(err, "count messages since")
+	}
+
+	return count >= chatContextWindowMessages, nil
+}
+
+// generateNotes generates and persists a notes snapshot for the given chat at
+// currentMsgID. Concurrent calls for the same chat are coalesced via singleflight:
+// only one AI request is made and all waiters receive the same result.
+func (a *Application) generateNotes(ctx context.Context, chatID, currentMsgID int64) error {
+	key := strconv.FormatInt(chatID, 10)
+
+	_, err, _ := a.notesSFG.Do(key, func() (any, error) {
+		return nil, a.doGenerateNotes(ctx, chatID, currentMsgID)
+	})
+
+	return err
+}
+
+// doGenerateNotes is the actual (non-deduplicated) note generation logic.
+func (a *Application) doGenerateNotes(ctx context.Context, chatID, currentMsgID int64) error {
+	lg := zctx.From(ctx).With(zap.Int64("chat_id", chatID))
+	lg.Info("Generating notes snapshot")
+
+	lastMessages, err := a.db.GetLastMessages(ctx, chatID, chatContextWindowMessages, currentMsgID)
+	if err != nil {
+		return errors.Wrap(err, "get last messages")
+	}
+
+	existingNotes, err := a.db.GetChatNotes(ctx, chatID)
+	if err != nil {
+		return errors.Wrap(err, "get chat notes")
+	}
+
+	var notesLines []string
+	for _, n := range existingNotes {
+		notesLines = append(notesLines, n.Text)
+	}
+
+	dialog := []openrouter.ChatCompletionMessage{
+		openrouter.SystemMessage(strings.Join([]string{
+			prompt.Protocol,
+			prompt.Notes,
+		}, "\n")),
+	}
+
+	if len(notesLines) > 0 {
+		dialog = append(dialog, openrouter.UserMessage(
+			"Существующие заметки:\n"+strings.Join(notesLines, "\n"),
+		))
+	}
+
+	for _, msg := range lastMessages {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return errors.Wrap(err, "marshal message")
+		}
+
+		dialog = append(dialog, openrouter.UserMessage(string(data)))
+	}
+
+	resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
+		Model:     a.model,
+		Messages:  dialog,
+		MaxTokens: maxNotesTokens,
+	})
+	if err != nil {
+		return errors.Wrap(err, "generate notes")
+	}
+
+	text := strings.TrimSpace(resp.Choices[0].Message.Content.Text)
+
+	if text == "" {
+		lg.Info("No new notes generated")
+		return nil
+	}
+
+	if _, err := a.db.AddChatNote(ctx, chatID, text); err != nil {
+		return errors.Wrap(err, "add chat note")
+	}
+
+	if _, err := a.db.SetLastNotesMsgID(ctx, chatID, currentMsgID); err != nil {
+		return errors.Wrap(err, "set last notes msg id")
+	}
+
+	lg.Info("Notes generated", zap.Int64("msg_id", currentMsgID))
+
+	return nil
+}
+
 func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u message.AnswerableMessageUpdate) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
@@ -399,6 +514,19 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			}
 		}
 
+		notesNeeded, err := a.isNotesNeeded(ctx, cc.chatID, int64(m.ID))
+		if err != nil {
+			return errors.Wrap(err, "isNotesNeeded")
+		}
+
+		if notesNeeded {
+			go func() {
+				if err := a.generateNotes(ctx, cc.chatID, int64(m.ID)); err != nil {
+					lg.Error("generate notes", zap.Error(err))
+				}
+			}()
+		}
+
 		if !shouldResponse {
 			lg.Info("Ignoring message")
 			return nil
@@ -410,7 +538,24 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			}, "\n")),
 		}
 
-		lastMessages, err := a.db.GetLastMessages(ctx, cc.chatID, 150, int64(m.ID))
+		notes, err := a.db.GetChatNotes(ctx, cc.chatID)
+		if err != nil {
+			return errors.Wrap(err, "get chat notes")
+		}
+
+		if len(notes) > 0 {
+			var noteLines []string
+
+			for _, n := range notes {
+				noteLines = append(noteLines, n.Text)
+			}
+
+			dialog = append(dialog, openrouter.SystemMessage(
+				"Заметки о чате:\n"+strings.Join(noteLines, "\n"),
+			))
+		}
+
+		lastMessages, err := a.db.GetLastMessages(ctx, cc.chatID, chatContextWindowMessages, int64(m.ID))
 		if err != nil {
 			return errors.Wrap(err, "get last messages")
 		}
@@ -467,7 +612,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
 			Model:     a.model,
 			Messages:  dialog,
-			MaxTokens: 450,
+			MaxTokens: maxTokens,
 		})
 		close(done)
 
