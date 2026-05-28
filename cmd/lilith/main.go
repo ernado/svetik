@@ -22,6 +22,7 @@ import (
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/tg"
 	"github.com/revrost/go-openrouter"
+	"github.com/revrost/go-openrouter/jsonschema"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
@@ -64,6 +65,29 @@ type Application struct {
 
 	// notesSFG deduplicates concurrent note-generation calls for the same chat.
 	notesSFG singleflight.Group
+}
+
+func getEmojiTool() openrouter.Tool {
+	toolParams := jsonschema.Definition{
+		Type: jsonschema.Object,
+		Properties: map[string]jsonschema.Definition{
+			"emoji": {
+				Type:        jsonschema.String,
+				Description: "Emoji to reply",
+			},
+		},
+		Required: []string{"emoji"},
+	}
+	functionDefinition := openrouter.FunctionDefinition{
+		Name:        "reply_emoji",
+		Description: "Repl to message with emoji",
+		Parameters:  toolParams,
+	}
+	t := openrouter.Tool{
+		Type:     openrouter.ToolTypeFunction,
+		Function: &functionDefinition,
+	}
+	return t
 }
 
 func (a *Application) Run(ctx context.Context) error {
@@ -459,6 +483,104 @@ func (a *Application) doGenerateNoteForMessage(ctx context.Context, chatID int64
 	return nil
 }
 
+// completeWithTools runs the AI completion loop, handling tool calls (e.g. emoji
+// reactions) until the model produces a text reply or the iteration limit is hit.
+// It returns the final message text (may be empty if the model produced no text).
+func (a *Application) completeWithTools(
+	ctx context.Context,
+	lg *zap.Logger,
+	dialog []openrouter.ChatCompletionMessage,
+	action *message.TypingActionBuilder,
+	answer *message.RequestBuilder,
+	msgID int,
+) (string, error) {
+	const maxIterations = 3
+
+	tools := []openrouter.Tool{
+		getEmojiTool(),
+	}
+
+	for i := range maxIterations {
+		if i > 0 {
+			lg.Info("Retrying after tool call", zap.Int("iteration", i))
+		}
+
+		done := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
+					if err := action.Typing(ctx); err != nil {
+						lg.Error("Failed to send typing action", zap.Error(err))
+						return
+					}
+				}
+			}
+		}()
+
+		resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
+			Model:     a.model,
+			Messages:  dialog,
+			MaxTokens: maxTokens,
+			Tools:     tools,
+		})
+		close(done)
+
+		if err != nil {
+			lg.Warn("Failed to create completion", zap.Error(err))
+			return "", errors.Wrap(err, "generate content")
+		}
+
+		msg := resp.Choices[0].Message
+
+		for _, tool := range msg.ToolCalls {
+			lg.Info("Function call",
+				zap.String("id", tool.ID),
+			)
+			switch tool.Function.Name {
+			case "reply_emoji":
+				var args struct {
+					Emoji string `json:"emoji"`
+				}
+
+				dialog = append(dialog, openrouter.ChatCompletionMessage{
+					Role:       openrouter.ChatMessageRoleTool,
+					Content:    openrouter.Content{Text: fmt.Sprintf("Successful emoji reply with %s", args.Emoji)},
+					ToolCallID: tool.ID,
+				})
+
+				if err := json.Unmarshal([]byte(tool.Function.Arguments), &args); err != nil {
+					lg.Warn("Failed to unmarshal emoji", zap.Error(err))
+				} else {
+					lg.Info("Setting reaction to message")
+					if _, err := answer.Reaction(ctx, msgID,
+						&tg.ReactionEmoji{Emoticon: args.Emoji},
+					); err != nil {
+						lg.Warn("Failed to send reaction", zap.Error(err))
+					}
+				}
+			default:
+				lg.Warn("Unknown function call", zap.String("name", tool.Function.Name))
+			}
+		}
+
+		// Only loop again when the model called a tool but produced no text yet.
+		if len(msg.ToolCalls) > 0 {
+			continue
+		}
+
+		return msg.Content.Text, nil
+	}
+
+	lg.Error("Too many tool-call iterations")
+
+	return "", nil
+}
+
 // russianWeekday returns the Russian name of a weekday.
 func russianWeekday(d time.Weekday) string {
 	switch d {
@@ -722,41 +844,17 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			dialog = append(dialog, openrouter.UserMessage(string(data)))
 		}
 
-		done := make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-done:
-					return
-				case <-ticker.C:
-					if err := action.Typing(ctx); err != nil {
-						lg.Error("Failed to send typing action", zap.Error(err))
-						return
-					}
-				}
-			}
-		}()
-
-		resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
-			Model:     a.model,
-			Messages:  dialog,
-			MaxTokens: maxTokens,
-		})
-		close(done)
-
+		messageText, err := a.completeWithTools(ctx, lg, dialog, action, answer, m.ID)
 		if err != nil {
-			lg.Warn("Failed to send create action", zap.Error(err))
-			return errors.Wrap(err, "generate content")
+			return errors.Wrap(err, "complete with tools")
 		}
 
-		replyText := resp.Choices[0].Message.Content.Text
-		if strings.TrimSpace(replyText) == "" {
+		if strings.TrimSpace(messageText) == "" {
 			lg.Warn("Empty response from AI")
 			return nil
 		}
-		replyUpdate, err := reply.Text(ctx, replyText)
+
+		replyUpdate, err := reply.Text(ctx, messageText)
 		if err != nil {
 			lg.Warn("Failed to send reply", zap.Error(err))
 			return errors.Wrap(err, "send reply")
@@ -769,7 +867,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 				MessageID: int64(v.ID),
 				UserID:    a.self.ID,
 				Date:      time.Unix(int64(v.Date), 0),
-				Text:      replyText,
+				Text:      messageText,
 				ReplyToID: lilith.T(int64(m.ID)),
 				IsMyself:  true,
 			}); err != nil {
@@ -784,7 +882,7 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 						MessageID: int64(upd.ID),
 						UserID:    a.self.ID,
 						Date:      time.Now(),
-						Text:      replyText,
+						Text:      messageText,
 						ReplyToID: lilith.T(int64(m.ID)),
 						IsMyself:  true,
 					}); err != nil {
