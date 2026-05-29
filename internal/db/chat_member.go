@@ -5,7 +5,7 @@ import (
 
 	"github.com/go-faster/errors"
 
-	"github.com/ernado/svetik"
+	"github.com/ernado/lilith"
 )
 
 // UpsertChatMember inserts or updates a chat member record.

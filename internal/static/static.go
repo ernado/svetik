@@ -10,9 +10,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ernado/lilith"
 	"github.com/go-faster/errors"
 	"github.com/google/uuid"
 )
+
+var _ lilith.FileStore = (*Server)(nil)
 
 // Server is a temporary in-memory file server.
 // Files are stored in memory and served over HTTP.

@@ -5,7 +5,7 @@ import (
 
 	"github.com/go-faster/errors"
 
-	"github.com/ernado/svetik"
+	"github.com/ernado/lilith"
 )
 
 // SaveMessage inserts a chat message record, doing nothing on conflict.

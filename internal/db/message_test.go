@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	"github.com/ernado/svetik"
+	"github.com/ernado/lilith"
 )
 
 type MessageTestSuite struct {

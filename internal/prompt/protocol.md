@@ -14,7 +14,7 @@
     "reply_to_myself": true
   },
   "self": {
-    "nickname": "svetik_bot",
+    "nickname": "lilith_bot",
     "name":     "Света",
     "rank":     ""
   },

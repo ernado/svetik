@@ -5,7 +5,7 @@ import (
 
 	"github.com/go-faster/errors"
 
-	"github.com/ernado/svetik"
+	"github.com/ernado/lilith"
 )
 
 // AddChatNote inserts a new note for the given chat and returns the created note.

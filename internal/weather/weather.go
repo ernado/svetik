@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/ernado/lilith"
 	"github.com/go-faster/errors"
 )
 
 const defaultBase = "http://api.weatherstack.com"
+
+var _ lilith.WeatherProvider = (*Client)(nil)
 
 // HTTPClient is the interface satisfied by *http.Client.
 type HTTPClient interface {
@@ -196,4 +199,29 @@ func (c *Client) GetCurrentByName(ctx context.Context, name, countryCode string)
 	}
 
 	return &result, nil
+}
+
+// Current implements lilith.WeatherProvider, mapping the Weatherstack response
+// to the domain weather report.
+func (c *Client) Current(ctx context.Context, city, countryCode string) (*lilith.WeatherReport, error) {
+	resp, err := c.GetCurrentByName(ctx, city, countryCode)
+	if err != nil {
+		return nil, err
+	}
+
+	var desc string
+	if len(resp.Current.WeatherDescriptions) > 0 {
+		desc = resp.Current.WeatherDescriptions[0]
+	}
+
+	return &lilith.WeatherReport{
+		LocationName: resp.Location.Name,
+		Country:      resp.Location.Country,
+		Description:  desc,
+		Temperature:  resp.Current.Temperature,
+		FeelsLike:    resp.Current.FeelsLike,
+		Humidity:     resp.Current.Humidity,
+		WindSpeed:    resp.Current.WindSpeed,
+		WindDir:      resp.Current.WindDir,
+	}, nil
 }

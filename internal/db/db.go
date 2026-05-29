@@ -4,7 +4,7 @@ package db
 import (
 	"context"
 
-	"github.com/ernado/svetik"
+	"github.com/ernado/lilith"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5/pgxpool"

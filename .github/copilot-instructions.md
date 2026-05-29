@@ -6,7 +6,7 @@
 
 Project uses MVC architecture.
 
-Models are defined in root package, e.g. in svetik.go.
+Models are defined in root package, e.g. in lilith.go.
 
 Service is defined in internal/service package.
 

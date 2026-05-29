@@ -1,4 +1,4 @@
-module github.com/ernado/svetik
+module github.com/ernado/lilith
 
 go 1.26.1
 
