@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ernado/svetik"
+	"github.com/ernado/svetik/internal/reaction"
 	"github.com/ernado/svetik/internal/weather"
 	"github.com/go-faster/errors"
 	"github.com/go-faster/sdk/app"
@@ -703,11 +704,14 @@ func (a *Application) completeWithTools(
 					return "", errors.Wrap(err, "unmarshal arguments")
 				}
 				lg.Info("Setting reaction to message")
-				if _, err := answer.Reaction(ctx, msgID,
-					&tg.ReactionEmoji{Emoticon: args.Emoji},
-				); err != nil {
-					lg.Warn("Failed to set reaction", zap.Error(err))
+				if text, ok := reaction.Canonicalize(args.Emoji); ok {
+					if _, err := answer.Reaction(ctx, msgID,
+						&tg.ReactionEmoji{Emoticon: text},
+					); err != nil {
+						lg.Warn("Failed to set reaction", zap.Error(err))
+					}
 				}
+
 			case "get_weather":
 				var args struct {
 					City        string `json:"city"`
