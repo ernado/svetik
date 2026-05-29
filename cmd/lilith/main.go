@@ -1181,22 +1181,29 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 				return errors.Wrap(err, "marshal dialog context")
 			}
 
-			um := openrouter.UserMessage(string(data))
-			if photoURI != "" {
-				um.Content.Multi = append(um.Content.Multi, openrouter.ChatMessagePart{
-					Type: openrouter.ChatMessagePartTypeImageURL,
-					Text: "image",
-					ImageURL: &openrouter.ChatMessageImageURL{
-						URL:    photoURI,
-						Detail: openrouter.ImageURLDetailHigh,
-					},
-				})
-			}
-
 			dialog = append(dialog,
 				openrouter.UserMessage("Текущее сообщение:"),
-				um,
+				openrouter.UserMessage(string(data)),
 			)
+
+			if photoURI != "" {
+				msg := openrouter.ChatCompletionMessage{
+					Role: openrouter.ChatMessageRoleUser,
+					Content: openrouter.Content{
+						Multi: []openrouter.ChatMessagePart{
+							{
+								Type: openrouter.ChatMessagePartTypeImageURL,
+								ImageURL: &openrouter.ChatMessageImageURL{
+									URL:    photoURI,
+									Detail: openrouter.ImageURLDetailHigh,
+								},
+							},
+						},
+					},
+				}
+
+				dialog = append(dialog, msg)
+			}
 		}
 
 		messageText, err := a.completeWithTools(ctx, lg, dialog, action, answer, m.ID)
