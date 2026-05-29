@@ -960,6 +960,22 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			))
 		}
 
+		members, err := a.db.GetChatMembers(ctx, cc.chatID)
+		if err != nil {
+			return errors.Wrap(err, "get chat members")
+		}
+
+		if len(members) > 0 {
+			membersData, err := json.Marshal(members)
+			if err != nil {
+				return errors.Wrap(err, "marshal members")
+			}
+
+			dialog = append(dialog, openrouter.SystemMessage(
+				"Участники чата:\n"+string(membersData),
+			))
+		}
+
 		lastMessages, err := a.db.GetLastMessages(ctx, cc.chatID, chatContextWindowMessages, int64(m.ID))
 		if err != nil {
 			return errors.Wrap(err, "get last messages")

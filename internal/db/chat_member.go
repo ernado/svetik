@@ -89,3 +89,59 @@ func (db *DB) GetChatMember(ctx context.Context, chatID, userID int64) (*lilith.
 
 	return &m, nil
 }
+
+// GetChatMembers returns all members of the given chat.
+func (db *DB) GetChatMembers(ctx context.Context, chatID int64) ([]lilith.ChatMember, error) {
+	q := psql.Select(
+		"chat_id",
+		"user_id",
+		"username",
+		"first_name",
+		"last_name",
+		"is_admin",
+		"is_creator",
+		"rank",
+	).
+		From("chat_members").
+		Where("chat_id = ?", chatID).
+		OrderBy("user_id")
+
+	sql, args, err := q.ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "build query")
+	}
+
+	rows, err := db.pgx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, errors.Wrap(err, "query")
+	}
+
+	defer rows.Close()
+
+	var members []lilith.ChatMember
+
+	for rows.Next() {
+		var m lilith.ChatMember
+
+		if err := rows.Scan(
+			&m.ChatID,
+			&m.UserID,
+			&m.Username,
+			&m.FirstName,
+			&m.LastName,
+			&m.IsAdmin,
+			&m.IsCreator,
+			&m.Rank,
+		); err != nil {
+			return nil, errors.Wrap(err, "scan")
+		}
+
+		members = append(members, m)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrap(err, "rows")
+	}
+
+	return members, nil
+}
