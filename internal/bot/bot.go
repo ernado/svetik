@@ -138,6 +138,10 @@ func (a *App) Run(ctx context.Context) error {
 						Command:     "lobotomy",
 						Description: "Очистить память",
 					},
+					{
+						Command:     "model",
+						Description: "Показать или установить модель",
+					},
 				},
 			}); err != nil {
 				return errors.Wrap(err, "set commands")
@@ -585,12 +589,12 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		return nil
 	}
 
-	switch m.Message {
-	case "/start", "/start@" + a.self.Username:
+	switch {
+	case m.Message == "/start" || m.Message == "/start@"+a.self.Username:
 		if _, err := reply.Text(ctx, "Привет, "+user.FirstName+"!"); err != nil {
 			return errors.Wrap(err, "send message")
 		}
-	case "/lobotomy", "/lobotomy@" + a.self.Username:
+	case m.Message == "/lobotomy" || m.Message == "/lobotomy@"+a.self.Username:
 		if !cc.userIsAdmin && !cc.userIsCreator {
 			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
 				return errors.Wrap(err, "send message")
@@ -612,6 +616,64 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		lg.Info("Lobotomy performed", zap.Int64("chat_id", cc.chatID))
 
 		if _, err := reply.Text(ctx, "Память очищена."); err != nil {
+			return errors.Wrap(err, "send message")
+		}
+	case m.Message == "/model" || m.Message == "/model@"+a.self.Username:
+		chat, err := a.db.GetChat(ctx, cc.chatID)
+		if err != nil {
+			lg.Error("get chat failed", zap.Error(err))
+
+			if _, err := reply.Text(ctx, "Ошибка при получении данных чата."); err != nil {
+				return errors.Wrap(err, "send message")
+			}
+
+			return nil
+		}
+
+		text := "Модель по умолчанию."
+		if chat.Model != "" {
+			text = "Текущая модель: " + chat.Model
+		}
+
+		if _, err := reply.Text(ctx, text); err != nil {
+			return errors.Wrap(err, "send message")
+		}
+	case strings.HasPrefix(m.Message, "/model ") || strings.HasPrefix(m.Message, "/model@"+a.self.Username+" "):
+		if !cc.userIsAdmin && !cc.userIsCreator {
+			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
+				return errors.Wrap(err, "send message")
+			}
+
+			return nil
+		}
+
+		arg := strings.TrimPrefix(m.Message, "/model@"+a.self.Username+" ")
+		arg = strings.TrimPrefix(arg, "/model ")
+		arg = strings.TrimSpace(arg)
+
+		var newModel string
+		if arg != "reset" {
+			newModel = arg
+		}
+
+		if err := a.db.SetChatModel(ctx, cc.chatID, newModel); err != nil {
+			lg.Error("set chat model failed", zap.Error(err))
+
+			if _, err := reply.Text(ctx, "Ошибка при установке модели."); err != nil {
+				return errors.Wrap(err, "send message")
+			}
+
+			return nil
+		}
+
+		lg.Info("Chat model updated", zap.Int64("chat_id", cc.chatID), zap.String("model", newModel))
+
+		text := "Модель сброшена до умолчания."
+		if newModel != "" {
+			text = "Модель установлена: " + newModel
+		}
+
+		if _, err := reply.Text(ctx, text); err != nil {
 			return errors.Wrap(err, "send message")
 		}
 	default:
@@ -712,7 +774,13 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			return errors.Wrap(err, "get member")
 		}
 
+		chat, err := a.db.GetChat(ctx, cc.chatID)
+		if err != nil {
+			return errors.Wrap(err, "get chat")
+		}
+
 		req := lilith.ResponseRequest{
+			Model:       chat.Model,
 			CurrentTime: currentTime,
 			Notes:       notes,
 			Members:     members,

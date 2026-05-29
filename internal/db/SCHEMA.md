@@ -2,10 +2,12 @@
 
 ## chat
 
-| Column | Type      | Constraints |
-|--------|-----------|-------------|
-| id     | BIGSERIAL | PRIMARY KEY |
-| info   | TEXT      | NOT NULL    |
+| Column             | Type      | Constraints |
+|--------------------|-----------|-------------|
+| id                 | BIGSERIAL | PRIMARY KEY |
+| info               | TEXT      | NOT NULL    |
+| last_notes_msg_id  | BIGINT    | NOT NULL DEFAULT 0 |
+| model              | TEXT      | NOT NULL DEFAULT '' |
 
 ## chat_messages
 

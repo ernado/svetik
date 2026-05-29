@@ -6,6 +6,8 @@ import "context"
 // only domain types so the AI layer (and its LLM SDK) stays out of the root
 // package, mirroring how DB depends on nothing but domain types.
 type ResponseRequest struct {
+	// Model, when non-empty, overrides the default model for this request.
+	Model string
 	// CurrentTime is a preformatted, human-readable timestamp injected into the
 	// system prompt (e.g. "29 May 26 14:00 +0300, пятница.").
 	CurrentTime string

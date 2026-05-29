@@ -191,6 +191,11 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 		weatherTool(),
 	}
 
+	model := c.model
+	if req.Model != "" {
+		model = req.Model
+	}
+
 	result := &lilith.ResponseResult{}
 
 	for i := range maxIterations {
@@ -218,7 +223,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 		}
 
 		resp, err := c.ai.CreateChatCompletionWithFallbackPolicy(ctx, openrouter.ChatCompletionRequest{
-			Model:     c.model,
+			Model:     model,
 			Messages:  dialog,
 			MaxTokens: maxTokens,
 			Tools:     tools,

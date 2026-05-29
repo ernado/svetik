@@ -29,7 +29,7 @@ func (db *DB) UpsertChat(ctx context.Context, chat lilith.Chat) error {
 
 // GetChat returns a chat by ID.
 func (db *DB) GetChat(ctx context.Context, id int64) (*lilith.Chat, error) {
-	q := psql.Select("id", "info", "last_notes_msg_id").
+	q := psql.Select("id", "info", "last_notes_msg_id", "model").
 		From("chat").
 		Where("id = ?", id)
 
@@ -40,12 +40,30 @@ func (db *DB) GetChat(ctx context.Context, id int64) (*lilith.Chat, error) {
 
 	var chat lilith.Chat
 
-	err = db.pgx.QueryRow(ctx, sql, args...).Scan(&chat.ID, &chat.Info, &chat.LastNotesMsgID)
+	err = db.pgx.QueryRow(ctx, sql, args...).Scan(&chat.ID, &chat.Info, &chat.LastNotesMsgID, &chat.Model)
 	if err != nil {
 		return nil, errors.Wrap(err, "scan")
 	}
 
 	return &chat, nil
+}
+
+// SetChatModel sets the model override for a chat.
+func (db *DB) SetChatModel(ctx context.Context, chatID int64, model string) error {
+	q := psql.Update("chat").
+		Set("model", model).
+		Where("id = ?", chatID)
+
+	sql, args, err := q.ToSql()
+	if err != nil {
+		return errors.Wrap(err, "build query")
+	}
+
+	if _, err := db.pgx.Exec(ctx, sql, args...); err != nil {
+		return errors.Wrap(err, "exec")
+	}
+
+	return nil
 }
 
 // SetLastNotesMsgID updates the last_notes_msg_id for a chat atomically,

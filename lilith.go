@@ -7,6 +7,8 @@ type Chat struct {
 	ID             int64
 	Info           string
 	LastNotesMsgID int64
+	// Model is the per-chat model override. Empty means use the default model.
+	Model string
 }
 
 // ChatNote represents a note attached to a chat.
