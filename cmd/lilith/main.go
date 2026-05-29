@@ -253,6 +253,14 @@ func (a *Application) resolveRegularChat(ctx context.Context, chatID int64, user
 		chatInfo: chatFull.About,
 	}
 
+	// Build a user map from the full chat response for name lookups.
+	users := make(map[int64]*tg.User, len(full.Users))
+	for _, u := range full.Users {
+		if user, ok := u.(*tg.User); ok {
+			users[user.ID] = user
+		}
+	}
+
 	if v, ok := chatFull.Participants.(*tg.ChatParticipants); ok {
 		for _, participant := range v.Participants {
 			var (
@@ -283,6 +291,24 @@ func (a *Application) resolveRegularChat(ctx context.Context, chatID int64, user
 				cc.userIsAdmin = isAdmin
 				cc.userIsCreator = isCreator
 				cc.userRank = rank
+			}
+
+			user, ok := users[id]
+			if !ok {
+				continue
+			}
+
+			if err := a.upsertChatMemberCached(ctx, lilith.ChatMember{
+				ChatID:    chatFull.ID,
+				UserID:    id,
+				Username:  user.Username,
+				FirstName: user.FirstName,
+				LastName:  user.LastName,
+				IsAdmin:   isAdmin,
+				IsCreator: isCreator,
+				Rank:      rank,
+			}); err != nil {
+				return nil, errors.Wrap(err, "upsert chat member")
 			}
 		}
 	}
