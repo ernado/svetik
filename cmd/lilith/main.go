@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
@@ -50,6 +51,10 @@ const (
 
 	// maxNotesTokens is the max_tokens parameter for notes generation.
 	maxNotesTokens = 1024
+
+	// implicitResponseProbability is the probability of responding to a message
+	// that does not explicitly mention the bot.
+	implicitResponseProbability = 0.05
 )
 
 // chatMemberKey is the cache key for a chat member.
@@ -960,6 +965,11 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 			}
 		}
 
+		if !shouldResponse && rand.Float64() < implicitResponseProbability {
+			lg.Info("Random implicit response triggered")
+			shouldResponse = true
+		}
+
 		notesNeeded, err := a.isNotesNeeded(ctx, cc.chatID, int64(m.ID))
 		if err != nil {
 			return errors.Wrap(err, "isNotesNeeded")
@@ -987,8 +997,13 @@ func (a *Application) onMessage(ctx context.Context, e tg.Entities, m *tg.Messag
 		}
 
 		now := time.Now()
+		loc, err := time.LoadLocation("Europe/Moscow")
+		if err != nil {
+			return errors.Wrap(err, "load location")
+		}
+		now = now.In(loc)
 		currentTime := fmt.Sprintf("Текущее время: %s, %s.",
-			now.Format("02.01.2006 15:04"),
+			now.Format(time.RFC822Z),
 			russianWeekday(now.Weekday()),
 		)
 
