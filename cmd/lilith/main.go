@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ernado/svetik"
+	"github.com/ernado/svetik/internal/weather"
 	"github.com/go-faster/errors"
 	"github.com/go-faster/sdk/app"
 	"github.com/go-faster/sdk/zctx"
@@ -63,13 +64,13 @@ type cachedChatMember struct {
 }
 
 type Application struct {
-	api    *tg.Client
-	client *telegram.Client
-	ai     *openrouter.Client
-	db     lilith.DB
-	self   *tg.User
-
-	model string
+	api     *tg.Client
+	client  *telegram.Client
+	ai      *openrouter.Client
+	db      lilith.DB
+	self    *tg.User
+	model   string
+	weather *weather.Client
 
 	waiter *floodwait.Waiter
 	trace  trace.Tracer
@@ -100,6 +101,32 @@ func getEmojiTool() openrouter.Tool {
 	functionDefinition := openrouter.FunctionDefinition{
 		Name:        "reply_emoji",
 		Description: "Repl to message with emoji",
+		Parameters:  toolParams,
+	}
+	t := openrouter.Tool{
+		Type:     openrouter.ToolTypeFunction,
+		Function: &functionDefinition,
+	}
+	return t
+}
+
+func getWeatherTool() openrouter.Tool {
+	toolParams := jsonschema.Definition{
+		Type: jsonschema.Object,
+		Properties: map[string]jsonschema.Definition{
+			"city": {
+				Type:        jsonschema.String,
+				Description: "City name, Moscow",
+			},
+			"country_code": {
+				Type:        jsonschema.String,
+				Description: "Country code, RU",
+			},
+		},
+	}
+	functionDefinition := openrouter.FunctionDefinition{
+		Name:        "get_weather",
+		Description: "Get weather",
 		Parameters:  toolParams,
 	}
 	t := openrouter.Tool{
@@ -556,10 +583,11 @@ func (a *Application) completeWithTools(
 	answer *message.RequestBuilder,
 	msgID int,
 ) (string, error) {
-	const maxIterations = 3
+	const maxIterations = 4
 
 	tools := []openrouter.Tool{
 		getEmojiTool(),
+		getWeatherTool(),
 	}
 
 	for i := range maxIterations {
@@ -649,6 +677,49 @@ func (a *Application) completeWithTools(
 				); err != nil {
 					return "", errors.Wrap(err, "reaction")
 				}
+			case "get_weather":
+				var args struct {
+					City        string `json:"city"`
+					CountryCode string `json:"country_code"`
+				}
+
+				if err := json.Unmarshal([]byte(tool.Function.Arguments), &args); err != nil {
+					return "", errors.Wrap(err, "unmarshal arguments")
+				}
+
+				info, err := a.weather.GetCurrentByName(ctx, args.City, args.CountryCode)
+				if err != nil {
+					return "", errors.Wrap(err, "get weather")
+				}
+
+				desc := args.City
+				if len(info.Current.WeatherDescriptions) > 0 {
+					desc = info.Current.WeatherDescriptions[0]
+				}
+
+				weatherInfo := fmt.Sprintf(
+					"Погода в %s (%s): %s, %d °C, ощущается как %d °C, влажность %d%%, ветер %d м/с %s",
+					info.Location.Name,
+					info.Location.Country,
+					desc,
+					info.Current.Temperature,
+					info.Current.FeelsLike,
+					info.Current.Humidity,
+					info.Current.WindSpeed,
+					info.Current.WindDir,
+				)
+
+				lg.Info("Adding weather info to dialog", zap.String("weather_info", weatherInfo))
+
+				dialog = append(dialog,
+					openrouter.ChatCompletionMessage{
+						Role: openrouter.ChatMessageRoleTool,
+						Content: openrouter.Content{
+							Text: weatherInfo,
+						},
+						ToolCallID: tool.ID,
+					},
+				)
 			default:
 				lg.Warn("Unknown function call", zap.String("name", tool.Function.Name))
 			}
@@ -1225,6 +1296,12 @@ func Root() *cobra.Command {
 				}
 			}
 
+			weatherAPIKey := os.Getenv("WEATHER_API_KEY")
+			if weatherAPIKey == "" {
+				return errors.New("WEATHER_API_KEY environment variable not set")
+			}
+			weatherClient := weather.New(weatherAPIKey, weather.Options{})
+
 			app.Run(func(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
 				botToken := os.Getenv("BOT_TOKEN")
 				if botToken == "" {
@@ -1269,6 +1346,7 @@ func Root() *cobra.Command {
 				a := &Application{
 					api:                          tg.NewClient(client),
 					ai:                           ai,
+					weather:                      weatherClient,
 					model:                        aiModel,
 					db:                           db.New(databaseConnection),
 					client:                       client,
