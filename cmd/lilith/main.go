@@ -494,6 +494,8 @@ func (a *Application) doGenerateNotes(ctx context.Context, chatID, currentMsgID 
 		dialog = append(dialog, openrouter.UserMessage(string(data)))
 	}
 
+	dialog = append(dialog, openrouter.UserMessage("Сгенерируй заметки"))
+
 	resp, err := a.ai.CreateChatCompletion(ctx, openrouter.ChatCompletionRequest{
 		Model:     a.model,
 		Messages:  dialog,
@@ -518,7 +520,10 @@ func (a *Application) doGenerateNotes(ctx context.Context, chatID, currentMsgID 
 		return errors.Wrap(err, "set last notes msg id")
 	}
 
-	lg.Info("Notes generated", zap.Int64("msg_id", currentMsgID))
+	lg.Info("Notes generated",
+		zap.Int64("msg_id", currentMsgID),
+		zap.String("text", text),
+	)
 
 	return nil
 }
