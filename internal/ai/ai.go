@@ -342,7 +342,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 func (c *Client) GenerateNotes(ctx context.Context, existing []lilith.ChatNote, messages []lilith.Message) (string, error) {
 	dialog := []openrouter.ChatCompletionMessage{
 		openrouter.SystemMessage(strings.Join([]string{
-			prompt.Protocol,
+			prompt.Character,
 			prompt.Notes,
 		}, "\n")),
 	}
@@ -383,6 +383,7 @@ func (c *Client) GenerateNotes(ctx context.Context, existing []lilith.ChatNote, 
 // note text. An empty string means no note is needed.
 func (c *Client) GenerateNote(ctx context.Context, existing []lilith.ChatNote, msg lilith.Message) (string, error) {
 	dialog := []openrouter.ChatCompletionMessage{
+		openrouter.SystemMessage(prompt.Character),
 		openrouter.SystemMessage(prompt.NoteSingle),
 	}
 
