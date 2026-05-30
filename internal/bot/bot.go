@@ -48,7 +48,7 @@ const (
 	idleMinDuration = 30 * time.Minute
 
 	// idleMaxDuration is the upper bound of the random inactivity threshold.
-	idleMaxDuration = 2 * time.Minute
+	idleMaxDuration = 2 * time.Hour
 )
 
 // chatMemberKey is the cache key for a chat member.
