@@ -246,6 +246,14 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 			return nil, errors.Wrap(err, "generate content")
 		}
 
+		if u := resp.Usage; u != nil {
+			lg.Debug("Token usage",
+				zap.Int("prompt_tokens", u.PromptTokens),
+				zap.Int("completion_tokens", u.CompletionTokens),
+				zap.Int("total_tokens", u.TotalTokens),
+			)
+		}
+
 		msg := resp.Choices[0].Message
 
 		for _, tool := range msg.ToolCalls {
@@ -384,6 +392,14 @@ func (c *Client) GenerateNotes(ctx context.Context, existing []lilith.ChatNote, 
 		return "", errors.Wrap(err, "generate notes")
 	}
 
+	if u := resp.Usage; u != nil {
+		zctx.From(ctx).Debug("Token usage (generate notes)",
+			zap.Int("prompt_tokens", u.PromptTokens),
+			zap.Int("completion_tokens", u.CompletionTokens),
+			zap.Int("total_tokens", u.TotalTokens),
+		)
+	}
+
 	return strings.TrimSpace(resp.Choices[0].Message.Content.Text), nil
 }
 
@@ -418,6 +434,14 @@ func (c *Client) GenerateNote(ctx context.Context, existing []lilith.ChatNote, m
 	})
 	if err != nil {
 		return "", errors.Wrap(err, "generate note for message")
+	}
+
+	if u := resp.Usage; u != nil {
+		zctx.From(ctx).Debug("Token usage (generate note)",
+			zap.Int("prompt_tokens", u.PromptTokens),
+			zap.Int("completion_tokens", u.CompletionTokens),
+			zap.Int("total_tokens", u.TotalTokens),
+		)
 	}
 
 	text := strings.TrimSpace(resp.Choices[0].Message.Content.Text)
