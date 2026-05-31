@@ -452,6 +452,9 @@ func (c *Client) GenerateNote(ctx context.Context, existing []lilith.ChatNote, m
 	if text == "" || text == "Empty line." || len(text) < minNoteLen {
 		return "", nil
 	}
+	if strings.Contains(text, "empty response") {
+		return "", nil
+	}
 
 	return text, nil
 }

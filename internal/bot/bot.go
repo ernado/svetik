@@ -249,6 +249,16 @@ func (a *App) resolveRegularChat(ctx context.Context, chatID int64, userID int64
 		chatType: lilith.ChatTypeChat,
 	}
 
+	// Persist the chat before its members to satisfy the chat_members ->
+	// chat foreign key constraint.
+	if err := a.db.UpsertChat(ctx, lilith.Chat{
+		ID:   cc.chatID,
+		Info: cc.chatInfo,
+		Type: cc.chatType,
+	}); err != nil {
+		return nil, errors.Wrap(err, "upsert chat")
+	}
+
 	// Build a user map from the full chat response for name lookups.
 	users := make(map[int64]*tg.User, len(full.Users))
 	for _, u := range full.Users {
@@ -412,7 +422,49 @@ func (a *App) resolveChatContext(ctx context.Context, e tg.Entities, userID int6
 		return a.resolveChannel(ctx, channel, userID)
 	}
 
+	// Private chat: no chat or channel entity; the peer is the user themselves.
+	if user, ok := e.Users[userID]; ok {
+		return a.resolvePrivateChat(ctx, user)
+	}
+
 	return nil, errors.New("no chat or channel in entities")
+}
+
+// resolvePrivateChat builds a chatContext for a one-on-one conversation where
+// the chat ID equals the user ID.
+func (a *App) resolvePrivateChat(ctx context.Context, user *tg.User) (*chatContext, error) {
+	cc := &chatContext{
+		chatID:     user.ID,
+		chatInfo:   strings.TrimSpace(user.FirstName + " " + user.LastName),
+		chatType:   lilith.ChatTypePrivate,
+		accessHash: user.AccessHash,
+	}
+
+	// Persist the chat before its members to satisfy the chat_members ->
+	// chat foreign key constraint.
+	if err := a.db.UpsertChat(ctx, lilith.Chat{
+		ID:         cc.chatID,
+		Info:       cc.chatInfo,
+		AccessHash: cc.accessHash,
+		Type:       cc.chatType,
+	}); err != nil {
+		return nil, errors.Wrap(err, "upsert chat")
+	}
+
+	// A private chat has no participants endpoint, so persist self explicitly.
+	// Otherwise self lookups during onMessage fail with "no rows in result set".
+	// The other party is upserted by onMessage from the message sender.
+	if err := a.upsertChatMemberCached(ctx, lilith.ChatMember{
+		ChatID:    cc.chatID,
+		UserID:    a.self.ID,
+		Username:  a.self.Username,
+		FirstName: a.self.FirstName,
+		LastName:  a.self.LastName,
+	}); err != nil {
+		return nil, errors.Wrap(err, "upsert self chat member")
+	}
+
+	return cc, nil
 }
 
 // russianWeekday returns the Russian name of a weekday.
@@ -504,6 +556,12 @@ func (a *App) storeChatPeer(chatID int64, e tg.Entities) {
 	}
 
 	if peer == nil {
+		if user, ok := e.Users[chatID]; ok {
+			peer = &tg.InputPeerUser{UserID: user.ID, AccessHash: user.AccessHash}
+		}
+	}
+
+	if peer == nil {
 		return
 	}
 
@@ -524,12 +582,18 @@ func (a *App) loadChatPeersFromDB(ctx context.Context) error {
 	defer a.chatPeersMu.Unlock()
 
 	for _, chat := range chats {
-		if chat.Type == lilith.ChatTypeChannel {
+		switch chat.Type {
+		case lilith.ChatTypeChannel:
 			a.chatPeers[chat.ID] = &tg.InputPeerChannel{
 				ChannelID:  chat.ID,
 				AccessHash: chat.AccessHash,
 			}
-		} else {
+		case lilith.ChatTypePrivate:
+			a.chatPeers[chat.ID] = &tg.InputPeerUser{
+				UserID:     chat.ID,
+				AccessHash: chat.AccessHash,
+			}
+		default:
 			a.chatPeers[chat.ID] = &tg.InputPeerChat{ChatID: chat.ID}
 		}
 	}
@@ -965,7 +1029,8 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			return errors.Wrap(err, "send message")
 		}
 	case strings.HasPrefix(m.Message, "/model ") || strings.HasPrefix(m.Message, "/model@"+a.self.Username+" "):
-		if !cc.userIsAdmin && !cc.userIsCreator {
+		// In a one-to-one chat the user has full control, so skip the admin check.
+		if cc.chatType != lilith.ChatTypePrivate && !cc.userIsAdmin && !cc.userIsCreator {
 			if _, err := reply.Text(ctx, "Недостаточно прав."); err != nil {
 				return errors.Wrap(err, "send message")
 			}
@@ -1004,6 +1069,10 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		}
 	default:
 		var shouldResponse bool
+
+		if cc.chatType == lilith.ChatTypePrivate {
+			shouldResponse = true
+		}
 
 		if replyToMyself != nil && *replyToMyself {
 			shouldResponse = true
@@ -1064,12 +1133,18 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 
 		selfMember, err := a.getChatMember(ctx, cc.chatID, a.self.ID)
 		if err != nil {
-			return errors.Wrap(err, "get chat member")
+			lg.Warn("Failed to get self chat member", zap.Error(err))
 		}
+
+		var selfRank string
+		if selfMember != nil {
+			selfRank = selfMember.Rank
+		}
+
 		self := lilith.Self{
 			Name:     a.self.FirstName,
 			Nickname: a.self.Username,
-			Rank:     selfMember.Rank,
+			Rank:     selfRank,
 		}
 
 		var history []lilith.Context
@@ -1081,7 +1156,11 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 
 			member, err := a.getChatMember(ctx, msg.ChatID, msg.UserID)
 			if err != nil {
-				return errors.Wrap(err, "get member")
+				lg.Warn("Failed to get member for history",
+					zap.Error(err),
+					zap.Int64("user_id", msg.UserID),
+				)
+				continue
 			}
 
 			dialogContext := lilith.Context{
@@ -1098,7 +1177,14 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 
 		currentMember, err := a.getChatMember(ctx, savedMsg.ChatID, savedMsg.UserID)
 		if err != nil {
-			return errors.Wrap(err, "get member")
+			lg.Warn("Failed to get current member, using user entity as fallback", zap.Error(err))
+			currentMember = &lilith.ChatMember{
+				ChatID:    cc.chatID,
+				UserID:    user.ID,
+				Username:  user.Username,
+				FirstName: user.FirstName,
+				LastName:  user.LastName,
+			}
 		}
 
 		chat, err := a.db.GetChat(ctx, cc.chatID)
@@ -1141,20 +1227,30 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			return nil
 		}
 
-		replyUpdate, err := reply.Text(ctx, result.Text)
-		if err != nil {
-			lg.Warn("Failed to send reply", zap.Error(err))
-			return errors.Wrap(err, "send reply")
-		}
-
-		a.saveSentMessage(ctx, replyUpdate, lilith.Message{
+		// In one-to-one chats there is no need to thread responses as replies;
+		// send directly to the chat instead.
+		sentMsg := lilith.Message{
 			ChatID:          cc.chatID,
 			UserID:          a.self.ID,
 			Text:            result.Text,
 			ReplyToID:       lilith.T(int64(m.ID)),
 			IsMyself:        true,
 			MessageThreadID: savedMsg.MessageThreadID,
-		}, &savedMsg)
+		}
+
+		send := reply.Text
+		if cc.chatType == lilith.ChatTypePrivate {
+			send = answer.Text
+			sentMsg.ReplyToID = nil
+		}
+
+		sentUpdate, err := send(ctx, result.Text)
+		if err != nil {
+			lg.Warn("Failed to send response", zap.Error(err))
+			return errors.Wrap(err, "send response")
+		}
+
+		a.saveSentMessage(ctx, sentUpdate, sentMsg, &savedMsg)
 	}
 
 	return nil

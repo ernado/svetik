@@ -11,6 +11,8 @@ const (
 	ChatTypeChannel ChatType = "channel"
 	// ChatTypeChat represents a regular Telegram group chat.
 	ChatTypeChat ChatType = "chat"
+	// ChatTypePrivate represents a private (one-on-one) chat with a user.
+	ChatTypePrivate ChatType = "private"
 )
 
 // Chat represents a Telegram chat.
