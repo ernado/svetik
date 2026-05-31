@@ -181,15 +181,9 @@ func run(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
 		lg.Info("Using scraper",
 			zap.String("addr", scraperAddr),
 		)
-		scraperClient, err := scraper.NewBrowser(ctx, scraper.BrowserOptions{
+		scraperService = scraper.NewFlareSolverr(scraper.FlareSolverrOptions{
 			Addr: scraperAddr,
 		})
-		if err != nil {
-			return errors.Wrap(err, "create scraper")
-		}
-		defer scraperClient.Close()
-
-		scraperService = scraperClient
 	}
 
 	aiClient := ai.New(router, aiModel, weatherClient)

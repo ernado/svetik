@@ -1,6 +1,6 @@
-// Package scraper implements lilith.Scraper on top of a headless Chrome (see
-// Browser). This file holds the shared HTML-extraction helpers used to turn a
-// rendered page into a lilith.ScrapeResult.
+// Package scraper implements lilith.Scraper backed by FlareSolverr (see
+// FlareSolverr). This file holds the shared HTML-extraction helpers used to
+// turn a fetched page into a lilith.ScrapeResult.
 package scraper
 
 import (

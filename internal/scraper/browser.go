@@ -1,13 +1,13 @@
 package scraper
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/chromedp"
 	"github.com/go-faster/errors"
 	"github.com/go-faster/sdk/zctx"
 	"go.uber.org/zap"
@@ -16,185 +16,123 @@ import (
 )
 
 const (
-	// defaultBrowserTimeout bounds a full Scrape (navigation + settle + capture).
-	defaultBrowserTimeout = 45 * time.Second
+	// defaultFlareSolverrAddr is the FlareSolverr endpoint used when none is given.
+	defaultFlareSolverrAddr = "http://127.0.0.1:8191/v1"
 
-	// defaultSettleTimeout bounds waiting for redirects and bot checks to clear.
-	defaultSettleTimeout = 20 * time.Second
-
-	// defaultChromeAddr is the remote allocator address used when none is given.
-	// It matches the default chromedp/headless-shell debugging port.
-	defaultChromeAddr = "http://127.0.0.1:9222"
+	// defaultTimeout bounds a single Scrape call end-to-end.
+	defaultTimeout = 60 * time.Second
 )
 
-// settleScript reports whether the page has finished loading and is past any
-// interstitial bot check. It returns true once the document is complete, the
-// title is not a known challenge page, and the body carries real text.
-const settleScript = `(function () {
-	if (document.readyState !== 'complete') return false;
-	var title = (document.title || '').toLowerCase();
-	var challenge = /just a moment|attention required|checking your browser|verifying you are human|access denied|ddos-guard|please wait/;
-	if (challenge.test(title)) return false;
-	var body = document.body ? (document.body.innerText || '').trim() : '';
-	return body.length > 50;
-})()`
+var _ lilith.Scraper = (*FlareSolverr)(nil)
 
-var _ lilith.Scraper = (*Browser)(nil)
-
-// Browser is a chromedp-backed scraper. It drives a remote headless Chrome so
-// that JavaScript-rendered pages, client-side redirects and bot interstitials
-// (e.g. Cloudflare "Just a moment...") resolve before content is extracted.
-type Browser struct {
-	allocCtx      context.Context
-	cancel        context.CancelFunc
-	timeout       time.Duration
-	settleTimeout time.Duration
+// FlareSolverr is a scraper backed by a FlareSolverr instance. It delegates
+// page fetching to FlareSolverr, which handles JavaScript rendering, Cloudflare
+// challenges and similar bot-protection mechanisms.
+type FlareSolverr struct {
+	addr    string
+	timeout time.Duration
+	client  *http.Client
 }
 
-// BrowserOptions configures Browser construction.
-type BrowserOptions struct {
-	// Addr is the chromedp remote allocator address of an already-running
-	// headless Chrome, e.g. "http://127.0.0.1:9222" or "ws://127.0.0.1:9222/".
-	// Defaults to defaultChromeAddr. Proxying, sandboxing and other launch flags
-	// are configured on that remote browser, not here.
+// FlareSolverrOptions configures FlareSolverr construction.
+type FlareSolverrOptions struct {
+	// Addr is the FlareSolverr API base URL, e.g. "http://127.0.0.1:8191/v1".
+	// Defaults to defaultFlareSolverrAddr.
 	Addr string
-	// Timeout bounds a single Scrape. Defaults to defaultBrowserTimeout.
+	// Timeout bounds a single Scrape. Defaults to defaultTimeout.
 	Timeout time.Duration
-	// SettleTimeout bounds waiting for redirects/checks. Must be below Timeout.
-	// Defaults to defaultSettleTimeout.
-	SettleTimeout time.Duration
 }
 
-// NewBrowser connects to a remote headless Chrome via the chromedp remote
-// allocator and returns a Browser scraper. Call Close to release the
-// connection. The Chrome instance at options.Addr must already be running.
-func NewBrowser(ctx context.Context, options BrowserOptions) (*Browser, error) {
+// NewFlareSolverr returns a FlareSolverr scraper pointed at the given endpoint.
+func NewFlareSolverr(options FlareSolverrOptions) *FlareSolverr {
 	if options.Addr == "" {
-		options.Addr = defaultChromeAddr
+		options.Addr = defaultFlareSolverrAddr
 	}
 	if options.Timeout <= 0 {
-		options.Timeout = defaultBrowserTimeout
-	}
-	if options.SettleTimeout <= 0 {
-		options.SettleTimeout = defaultSettleTimeout
-	}
-	if options.SettleTimeout >= options.Timeout {
-		// Keep a margin so content can still be captured after a settle timeout.
-		options.SettleTimeout = options.Timeout / 2
+		options.Timeout = defaultTimeout
 	}
 
-	allocCtx, cancel := chromedp.NewRemoteAllocator(ctx, options.Addr)
-
-	return &Browser{
-		allocCtx:      allocCtx,
-		cancel:        cancel,
-		timeout:       options.Timeout,
-		settleTimeout: options.SettleTimeout,
-	}, nil
+	return &FlareSolverr{
+		addr:    options.Addr,
+		timeout: options.Timeout,
+		client:  &http.Client{Timeout: options.Timeout + 5*time.Second},
+	}
 }
 
-// Close releases the connection to the remote browser. The Browser must not be
-// used afterwards.
-func (b *Browser) Close() {
-	b.cancel()
+// flareSolverrRequest is the JSON body sent to the FlareSolverr API.
+type flareSolverrRequest struct {
+	Cmd        string `json:"cmd"`
+	URL        string `json:"url"`
+	MaxTimeout int    `json:"maxTimeout"`
 }
 
-// Scrape navigates to url in a fresh tab, waits for redirects and bot checks to
-// finish, then extracts the rendered page's content.
-func (b *Browser) Scrape(ctx context.Context, rawURL string) (*lilith.ScrapeResult, error) {
-	// A new tab off the shared browser. It derives from the background allocator
-	// context, so propagate caller cancellation explicitly below.
-	tabCtx, cancelTab := chromedp.NewContext(b.allocCtx)
-	defer cancelTab()
+// flareSolverrResponse is the JSON body returned by the FlareSolverr API.
+type flareSolverrResponse struct {
+	Status   string `json:"status"`
+	Message  string `json:"message"`
+	Solution struct {
+		URL      string `json:"url"`
+		Status   int    `json:"status"`
+		Response string `json:"response"`
+	} `json:"solution"`
+}
 
-	runCtx, cancel := context.WithTimeout(tabCtx, b.timeout)
-	defer cancel()
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			cancel()
-		case <-runCtx.Done():
-		}
-	}()
-
-	// Record the HTTP status of document responses so the final page's status
-	// can be reported. Keyed by URL because challenge flows load several.
-	var (
-		mu         sync.Mutex
-		statuses   = map[string]int64{}
-		lastStatus int64
-	)
-	chromedp.ListenTarget(runCtx, func(ev any) {
-		if e, ok := ev.(*network.EventResponseReceived); ok &&
-			e.Type == network.ResourceTypeDocument && e.Response != nil {
-			mu.Lock()
-			statuses[e.Response.URL] = e.Response.Status
-			lastStatus = e.Response.Status
-			mu.Unlock()
-		}
-	})
-
-	if err := chromedp.Run(runCtx,
-		network.Enable(),
-		chromedp.Navigate(rawURL),
-	); err != nil {
-		return nil, errors.Wrap(err, "navigate")
+// Scrape fetches the page at rawURL via FlareSolverr and extracts its content.
+func (f *FlareSolverr) Scrape(ctx context.Context, rawURL string) (*lilith.ScrapeResult, error) {
+	reqBody := flareSolverrRequest{
+		Cmd:        "request.get",
+		URL:        rawURL,
+		MaxTimeout: int(f.timeout.Milliseconds()),
 	}
 
-	// Wait for the page to settle. A settle timeout is not fatal: capture
-	// whatever has rendered so far. WithPollingTimeout bounds the poll without
-	// cancelling runCtx, leaving time for the capture below.
-	var settled bool
-	if err := chromedp.Run(runCtx,
-		chromedp.Poll(settleScript, &settled, chromedp.WithPollingTimeout(b.settleTimeout)),
-	); err != nil {
-		zctx.From(ctx).Warn("Scraper page did not settle, capturing anyway",
-			zap.String("url", rawURL),
-			zap.Error(err),
-		)
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, errors.Wrap(err, "marshal request")
 	}
 
-	var (
-		rendered string
-		finalURL string
-	)
-	if err := chromedp.Run(runCtx,
-		chromedp.Location(&finalURL),
-		chromedp.OuterHTML("html", &rendered, chromedp.ByQuery),
-	); err != nil {
-		return nil, errors.Wrap(err, "capture html")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, f.addr, bytes.NewReader(body))
+	if err != nil {
+		return nil, errors.Wrap(err, "build request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "do request")
+	}
+	defer resp.Body.Close()
+
+	var fsResp flareSolverrResponse
+	if err := json.NewDecoder(resp.Body).Decode(&fsResp); err != nil {
+		return nil, errors.Wrap(err, "decode response")
 	}
 
+	if fsResp.Status != "ok" {
+		return nil, errors.Errorf("flaresolverr error: %s", fsResp.Message)
+	}
+
+	finalURL := fsResp.Solution.URL
 	if finalURL == "" {
 		finalURL = rawURL
 	}
 
-	mu.Lock()
-	status := statuses[finalURL]
-	if status == 0 {
-		status = lastStatus
-	}
-	mu.Unlock()
-	if status == 0 {
-		// We have rendered HTML but never observed a document response status.
-		status = 200
+	statusCode := fsResp.Solution.Status
+	if statusCode == 0 {
+		statusCode = 200
 	}
 
-	zctx.From(ctx).Info("Scraper rendered page",
+	zctx.From(ctx).Info("FlareSolverr fetched page",
 		zap.String("url", finalURL),
-		zap.Int64("status", status),
-		zap.Bool("settled", settled),
-		zap.Int("html_bytes", len(rendered)),
+		zap.Int("status", statusCode),
+		zap.Int("html_bytes", len(fsResp.Solution.Response)),
 	)
 
 	result := &lilith.ScrapeResult{
 		URL:        finalURL,
-		StatusCode: int(status),
+		StatusCode: statusCode,
 	}
 
-	// chromedp returns the live DOM serialized as UTF-8, so no charset decoding.
-	if err := extractContent(strings.NewReader(rendered), result); err != nil {
+	if err := extractContent(strings.NewReader(fsResp.Solution.Response), result); err != nil {
 		return nil, err
 	}
 
