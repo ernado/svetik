@@ -49,6 +49,15 @@ const (
 
 	// idleMaxDuration is the upper bound of the random inactivity threshold.
 	idleMaxDuration = 2 * time.Hour
+
+	// scrapeTimeout bounds fetching an unresolved link preview so a slow page
+	// cannot stall message handling. It is generous because the scraper drives a
+	// headless browser that must wait out redirects and bot checks.
+	scrapeTimeout = 60 * time.Second
+
+	// maxScrapeTextLen caps how many runes of scraped body text are kept for
+	// model context.
+	maxScrapeTextLen = 2000
 )
 
 // chatMemberKey is the cache key for a chat member.
@@ -65,13 +74,14 @@ type cachedChatMember struct {
 
 // App is the Telegram bot orchestrator.
 type App struct {
-	api    *tg.Client
-	client *telegram.Client
-	db     lilith.DB
-	ai     lilith.AI
-	memory lilith.Memory
-	files  lilith.FileStore
-	self   *tg.User
+	api     *tg.Client
+	client  *telegram.Client
+	db      lilith.DB
+	ai      lilith.AI
+	memory  lilith.Memory
+	files   lilith.FileStore
+	scraper lilith.Scraper
+	self    *tg.User
 
 	waiter *floodwait.Waiter
 	trace  trace.Tracer
@@ -89,13 +99,15 @@ type App struct {
 	chatPeers   map[int64]tg.InputPeerClass
 }
 
-// New constructs an App. files may be nil to disable media handling.
+// New constructs an App. files may be nil to disable media handling, and
+// scraper may be nil to disable fetching unresolved link previews.
 func New(
 	client *telegram.Client,
 	db lilith.DB,
 	ai lilith.AI,
 	mem lilith.Memory,
 	files lilith.FileStore,
+	scraper lilith.Scraper,
 	waiter *floodwait.Waiter,
 	tracer trace.Tracer,
 ) *App {
@@ -106,6 +118,7 @@ func New(
 		ai:                           ai,
 		memory:                       mem,
 		files:                        files,
+		scraper:                      scraper,
 		waiter:                       waiter,
 		trace:                        tracer,
 		channelParticipantsFetchedAt: make(map[int64]time.Time),
@@ -514,38 +527,155 @@ func maxSize(sizes []tg.PhotoSizeClass) string {
 	return maxSize
 }
 
+// photoFromMedia extracts a non-empty photo from message media, handling both a
+// directly attached photo and a photo embedded in a web-page link preview.
+func photoFromMedia(media tg.MessageMediaClass) (*tg.Photo, bool) {
+	switch m := media.(type) {
+	case *tg.MessageMediaPhoto:
+		return m.Photo.AsNotEmpty()
+	case *tg.MessageMediaWebPage:
+		page, ok := m.Webpage.(*tg.WebPage)
+		if !ok {
+			return nil, false
+		}
+		photo, ok := page.GetPhoto()
+		if !ok {
+			return nil, false
+		}
+		return photo.AsNotEmpty()
+	default:
+		return nil, false
+	}
+}
+
+// linkPreviewText renders the textual content of a web-page link preview so the
+// model can see what a shared link is about. For a resolved preview
+// (*tg.WebPage) it returns the site name, title and description. For an
+// unresolved one (*tg.WebPageEmpty, which is what bots receive) it scrapes the
+// linked page, falling back to the bare URL. Returns an empty string when no
+// text is available.
+func (a *App) linkPreviewText(ctx context.Context, m *tg.Message) string {
+	media, ok := m.Media.(*tg.MessageMediaWebPage)
+	if !ok {
+		return ""
+	}
+
+	switch page := media.Webpage.(type) {
+	case *tg.WebPage:
+		var lines []string
+		if site, ok := page.GetSiteName(); ok && site != "" {
+			lines = append(lines, site)
+		}
+		if title, ok := page.GetTitle(); ok && title != "" {
+			lines = append(lines, title)
+		}
+		if desc, ok := page.GetDescription(); ok && desc != "" {
+			lines = append(lines, desc)
+		}
+
+		return strings.Join(lines, "\n")
+	case *tg.WebPageEmpty:
+		// Bots receive no resolved preview, so fetch the page ourselves. The URL
+		// may be carried on the empty preview, otherwise it is in the message.
+		url, _ := page.GetURL()
+		if url == "" {
+			url = firstURL(m.Message)
+		}
+		if url == "" {
+			return ""
+		}
+
+		return a.scrapeLink(ctx, url)
+	default:
+		return ""
+	}
+}
+
+// scrapeLink fetches url and renders its title, description and a truncated body
+// for model context. It returns the bare URL when scraping is disabled or fails.
+func (a *App) scrapeLink(ctx context.Context, url string) string {
+	if a.scraper == nil {
+		return url
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, scrapeTimeout)
+	defer cancel()
+
+	res, err := a.scraper.Scrape(ctx, url)
+	if err != nil {
+		zctx.From(ctx).Warn("Failed to scrape link",
+			zap.String("url", url),
+			zap.Error(err),
+		)
+
+		return url
+	}
+
+	var lines []string
+	if res.Title != "" {
+		lines = append(lines, res.Title)
+	}
+	if res.Description != "" {
+		lines = append(lines, res.Description)
+	}
+	if res.Text != "" {
+		lines = append(lines, truncate(res.Text, maxScrapeTextLen))
+	}
+
+	if len(lines) == 0 {
+		return url
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// firstURL returns the first http(s) URL found in s, or an empty string.
+func firstURL(s string) string {
+	for _, f := range strings.Fields(s) {
+		if strings.HasPrefix(f, "http://") || strings.HasPrefix(f, "https://") {
+			return strings.TrimRight(f, ".,)];\"'")
+		}
+	}
+
+	return ""
+}
+
+// truncate shortens s to at most maxRunes runes, appending an ellipsis when cut.
+func truncate(s string, maxRunes int) string {
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+
+	return string(r[:maxRunes]) + "…"
+}
+
 func (a *App) persistPhoto(ctx context.Context, m *tg.Message) (string, error) {
 	if a.files == nil {
 		return "", nil
 	}
 
-	dl := downloader.NewDownloader()
-
-	// Checking for media.
-	switch media := m.Media.(type) {
-	case *tg.MessageMediaPhoto:
-		p, ok := media.Photo.AsNotEmpty()
-		if !ok {
-			return "", nil
-		}
-		out := new(bytes.Buffer)
-		if _, err := dl.Download(a.api, &tg.InputPhotoFileLocation{
-			ID:            p.ID,
-			AccessHash:    p.AccessHash,
-			FileReference: p.FileReference,
-			ThumbSize:     maxSize(p.Sizes),
-		}).Stream(ctx, out); err != nil {
-			return "", errors.Wrap(err, "download photo")
-		}
-		photoURI, err := a.files.Upload(out)
-		if err != nil {
-			return "", errors.Wrap(err, "upload photo")
-		}
-
-		return photoURI, nil
-	default:
+	p, ok := photoFromMedia(m.Media)
+	if !ok {
 		return "", nil
 	}
+
+	out := new(bytes.Buffer)
+	if _, err := downloader.NewDownloader().Download(a.api, &tg.InputPhotoFileLocation{
+		ID:            p.ID,
+		AccessHash:    p.AccessHash,
+		FileReference: p.FileReference,
+		ThumbSize:     maxSize(p.Sizes),
+	}).Stream(ctx, out); err != nil {
+		return "", errors.Wrap(err, "download photo")
+	}
+
+	photoURI, err := a.files.Upload(out)
+	if err != nil {
+		return "", errors.Wrap(err, "upload photo")
+	}
+
+	return photoURI, nil
 }
 
 // storeChatPeer records the input peer for a chat so it can be used for
@@ -819,6 +949,16 @@ func (a *App) sendIdleMessage(ctx context.Context, chat lilith.Chat, last *lilit
 	return nil
 }
 
+// maintainNotes folds a message into the chat's long-term notes in the
+// background. Used for every recorded message, including those from bots.
+func (a *App) maintainNotes(ctx context.Context, chatID int64, msg lilith.Message) {
+	go func() {
+		if err := a.memory.Maintain(ctx, chatID, msg); err != nil {
+			zctx.From(ctx).Error("maintain notes", zap.Error(err))
+		}
+	}()
+}
+
 func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u message.AnswerableMessageUpdate) error {
 	ctx, span := a.trace.Start(ctx, "OnNewMessage")
 	defer span.End()
@@ -947,12 +1087,23 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		}
 	}
 
+	// Augment the message text with the link-preview content so the model can
+	// see what a shared link is about, not just its URL. Skip it when the body
+	// already contains the preview text (e.g. a plain, visible URL).
+	text := m.Message
+	if preview := a.linkPreviewText(ctx, m); preview != "" && !strings.Contains(text, preview) {
+		if text != "" {
+			text += "\n\n"
+		}
+		text += preview
+	}
+
 	savedMsg := lilith.Message{
 		ChatID:          cc.chatID,
 		MessageID:       int64(m.ID),
 		UserID:          user.ID,
 		Date:            time.Unix(int64(m.Date), 0),
-		Text:            m.Message,
+		Text:            text,
 		IsMyself:        m.Out,
 		ImageURL:        photoURI,
 		ReplyToID:       replyToID,
@@ -984,7 +1135,10 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 		return nil
 	}
 	if user.Bot {
-		lg.Info("Ignoring bot message")
+		// Don't reply to bots, but the message is already persisted above; fold
+		// it into the chat notes too so bot activity stays part of the history.
+		lg.Info("Not responding to bot message")
+		a.maintainNotes(ctx, cc.chatID, savedMsg)
 		return nil
 	}
 
@@ -1107,11 +1261,7 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 			shouldResponse = true
 		}
 
-		go func() {
-			if err := a.memory.Maintain(ctx, cc.chatID, savedMsg); err != nil {
-				lg.Error("maintain notes", zap.Error(err))
-			}
-		}()
+		a.maintainNotes(ctx, cc.chatID, savedMsg)
 
 		if !shouldResponse {
 			lg.Info("Ignoring message")
@@ -1169,11 +1319,14 @@ func (a *App) onMessage(ctx context.Context, e tg.Entities, m *tg.Message, u mes
 
 			member, err := a.getChatMember(ctx, msg.ChatID, msg.UserID)
 			if err != nil {
-				lg.Warn("Failed to get member for history",
+				// Author isn't a known member (e.g. a bot or a user who left).
+				// Keep the message in context with a minimal member rather than
+				// dropping it from history entirely.
+				lg.Warn("Member not found for history message, using fallback",
 					zap.Error(err),
 					zap.Int64("user_id", msg.UserID),
 				)
-				continue
+				member = &lilith.ChatMember{ChatID: msg.ChatID, UserID: msg.UserID}
 			}
 
 			dialogContext := lilith.Context{

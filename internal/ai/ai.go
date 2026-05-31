@@ -369,7 +369,7 @@ func (c *Client) Respond(ctx context.Context, req lilith.ResponseRequest) (*lili
 			continue
 		}
 
-		result.Text = msg.Content.Text
+		result.Text = trimEmoji(msg.Content.Text)
 		return result, nil
 	}
 

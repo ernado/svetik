@@ -26,6 +26,7 @@ import (
 	"github.com/ernado/lilith/internal/bot"
 	"github.com/ernado/lilith/internal/db"
 	"github.com/ernado/lilith/internal/memory"
+	"github.com/ernado/lilith/internal/scraper"
 	"github.com/ernado/lilith/internal/static"
 	"github.com/ernado/lilith/internal/weather"
 )
@@ -175,9 +176,17 @@ func run(ctx context.Context, _ *zap.Logger, t *app.Telemetry) error {
 		fileStore = staticServer
 	}
 
+	scraperClient, err := scraper.NewBrowser(ctx, scraper.BrowserOptions{
+		Addr: os.Getenv("CHROMEDP_ADDR"),
+	})
+	if err != nil {
+		return errors.Wrap(err, "create scraper")
+	}
+	defer scraperClient.Close()
+
 	aiClient := ai.New(router, aiModel, weatherClient)
 	mem := memory.New(database, aiClient)
-	botApp := bot.New(client, database, aiClient, mem, fileStore, waiter, t.TracerProvider().Tracer("lilith.bot"))
+	botApp := bot.New(client, database, aiClient, mem, fileStore, scraperClient, waiter, t.TracerProvider().Tracer("lilith.bot"))
 	botApp.Register(dispatcher)
 
 	if staticServer != nil {
